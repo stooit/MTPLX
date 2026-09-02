@@ -20,6 +20,7 @@ SUPPORTED_ARCH_IDS = {
     "glm-moe-dsa-mtp",
     "glm4-moe-mtp",
     "glm4-moe-lite-mtp",
+    "glm5-next-mtp",
     "mimo-mtp",
     "nemotron-h-mtp",
     "gemma4-assistant-mtp",
@@ -383,6 +384,35 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
             "REFERENCES:TOOLS/mlx-lm/mlx_lm/models/glm4_moe_lite.py",
         ),
         notes="Experimental native backend is present for verified-contract GLM-4 MoE Lite MTP artifacts; the Lite MLA cache/key rewrite is handled separately from plain GLM-4 MoE.",
+    ),
+    # Recognition only for now (spec §4 PR 0). The support level is
+    # provisional and is re-set from real runtime evidence before the GLM
+    # stack is submitted; do not promote it without acceptance and tok/s
+    # rows.
+    "glm5-next-mtp": ArchitectureSupport(
+        arch_id="glm5-next-mtp",
+        display_name="GLM-5.3-Flash (glm5_next) MTP",
+        family="glm",
+        backend=None,
+        support_level="recognized-backend-pending",
+        runtime_compatibility="recognized-backend-pending",
+        can_run_verified=False,
+        aliases=("glm5_next", "glm5_next_mtp"),
+        family_gate="appended-layer-mtp-markers",
+        references=(
+            "https://huggingface.co/zai-org/GLM-5.3-Flash",
+            "https://recipes.vllm.ai/zai-org/GLM-5.3-Flash",
+        ),
+        notes=(
+            "GLM-5.3-Flash is a 320B-total / 18B-active multimodal MoE: KDA "
+            "linear attention, periodic sparse attention, "
+            "manifold-constrained hyper-connections, a vision tower, and one "
+            "native MTP prediction layer. It loads under mlx-vlm rather than "
+            "mlx-lm, which MTPLX does not depend on yet, so this entry is "
+            "recognition only. The support level is provisional and is set "
+            "from real runtime evidence before the GLM stack is submitted; "
+            "do not promote it without acceptance and tok/s rows."
+        ),
     ),
     "glm-ocr-mtp": ArchitectureSupport(
         arch_id="glm-ocr-mtp",

@@ -1250,6 +1250,23 @@ def tune_policy_for_model(
         return GEMMA4_ASSISTANT_DESCRIPTOR.tune_policy
     if family == "step":
         return STEP3P5_MTP_DESCRIPTOR.tune_policy
+    if family == "glm":
+        # Tune drives run_mtp_depth_sweep, the same runner behind
+        # `mtplx mtp-depth-sweep`, which was measured end to end against a
+        # forged GLM-4.7-Flash pack (glm4_moe_lite): AR plus depths 1-3,
+        # reproducible across two runs with paired AR baselines inside 0.15%.
+        # The gate was a conservative allowlist, and it made `forge build`
+        # exit 1 on GLM after a successful convert and calibrate, leaving the
+        # artifact unbranded and without an mtplx_runtime.json baseline.
+        #
+        # Capped at D3 because GLM inherits
+        # NATIVE_CONTRACT_DESCRIPTOR.draft_semantics (minimum 1, maximum 3);
+        # offering D4+ would advertise depths the backend refuses, which is
+        # the failure the qwen3_8 branch above already guards against.
+        return TunePolicy(
+            supported=True,
+            candidates=("AR", "D1", "D2", "D3"),
+        )
     return TunePolicy(
         supported=False,
         unsupported_reason="Tune is supported for Qwen 3.5, Qwen 3.6, Qwen 3.8, and Gemma 4 MTPLX models only.",
