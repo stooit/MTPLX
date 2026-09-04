@@ -15591,6 +15591,8 @@ def _metrics_envelope(
         "mtp_history_policy": str(stats.get("mtp_history_policy") or ""),
         "mtp_history_window_tokens": int(stats.get("mtp_history_window_tokens") or 0),
         "mtp_history_position_base": int(stats.get("mtp_history_position_base") or 0),
+        **({"fixed_m4_admission": stats["fixed_m4_admission"]}
+           if stats.get("fixed_m4_admission") else {}),
         **_maintenance_timing_stats(stats),
         "session_cache_hit": bool(session_cache_hit),
         "cache_miss_reason": cache_miss_reason,

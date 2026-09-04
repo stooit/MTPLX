@@ -354,6 +354,10 @@ def _qwen4_fixed_m4_compiled_verify_requested(
     max_tokens: int,
     cached_tokens: int,
     prompt_tokens: int,
+    speculative_depth: int = 3,
+    session_bank: Any | None = None,
+    prompt_ids: list[int] | None = None,
+    receipt: dict | None = None,
 ) -> bool:
     """Construction gate for the shape-specialized physical-M4 verifier."""
 
@@ -366,7 +370,21 @@ def _qwen4_fixed_m4_compiled_verify_requested(
         and int(max_tokens) > 0
     ):
         return False
-    return _qwen4_fixed_m4_lane_fits(rt, prompt_tokens=int(prompt_tokens))
+    if receipt is not None:
+        receipt.update(requested_depth=int(speculative_depth), engaged=False)
+    if int(speculative_depth) < 3:
+        # This bank has only a four-row compiled forward. D1/D2 otherwise
+        # pay the O(context) copy and memory twice, then run eager anyway.
+        if receipt is not None:
+            receipt["reason"] = "depth_below_compiled_window"
+        return False
+    fits = _qwen4_fixed_m4_lane_fits(
+        rt, prompt_tokens=int(prompt_tokens), session_bank=session_bank,
+        prompt_ids=prompt_ids, receipt=receipt,
+    )
+    if receipt is not None:
+        receipt.update(engaged=fits, reason="admitted" if fits else "memory_gate")
+    return fits
 
 
 # The prefill admission line (server _PREFILL_ADMISSION_PRESSURE_FRACTION).
@@ -456,7 +474,10 @@ def _announce_qwen4_fixed_m4_skip(reason: str) -> None:
         pass
 
 
-def _qwen4_fixed_m4_lane_fits(rt: Any, *, prompt_tokens: int) -> bool:
+def _qwen4_fixed_m4_lane_fits(
+    rt: Any, *, prompt_tokens: int, session_bank: Any | None = None,
+    prompt_ids: list[int] | None = None, receipt: dict | None = None,
+) -> bool:
     """Per-request memory gate for the strict fixed-M4 lane.
 
     The promotion copies every QSA layer's state into padded banks (about
@@ -490,6 +511,8 @@ def _qwen4_fixed_m4_lane_fits(rt: Any, *, prompt_tokens: int) -> bool:
     need = (prompt_tokens + _fixed_m4_initial_growth_reserve()) * per_token
     live = _mlx_live_memory_bytes()
     line = int(limit * _QWEN4_FIXED_M4_PRESSURE_FRACTION)
+    if receipt is not None:
+        receipt.update(live_bytes_before=live, promotion_bytes=need, threshold_bytes=line)
     if live + need <= line:
         return True
     # The allocator cache is free memory the allocator is holding; only
@@ -499,6 +522,26 @@ def _qwen4_fixed_m4_lane_fits(rt: Any, *, prompt_tokens: int) -> bool:
     released = _mlx_release_allocator_cache()
     if released > 0:
         live = _mlx_live_memory_bytes()
+        if live + need <= line:
+            return True
+    # Idle bank snapshots compete with the faster verifier. Reuse the same
+    # protected eviction order as prefill admission, then measure allocator
+    # bytes again: evicted logical bytes are not necessarily physical savings.
+    reclaim = getattr(session_bank, "shrink_for_admission", None)
+    if callable(reclaim) and prompt_ids:
+        bank_before = int(session_bank.total_nbytes)
+        deficit = max(0, live + need - line)
+        chain, terminal = reclaim(
+            max(0, bank_before - deficit), protect_tokens=prompt_ids,
+            reason="fixed_m4_admission",
+        )
+        _mlx_release_allocator_cache()
+        live = _mlx_live_memory_bytes()
+        if receipt is not None:
+            receipt.update(bank_bytes_before=bank_before,
+                           bank_bytes_after=int(session_bank.total_nbytes),
+                           chain_entries_evicted=chain, terminal_entries_evicted=terminal,
+                           live_bytes_after=live)
         if live + need <= line:
             return True
     _announce_qwen4_fixed_m4_skip(
@@ -2620,6 +2663,7 @@ class GenerationStats:
     speculative_depth: int = 0
     requested_speculative_depth: int = 0
     long_context_mtp_depth_policy: dict[str, object] = field(default_factory=dict)
+    fixed_m4_admission: dict[str, object] = field(default_factory=dict)
     accepted_by_depth: list[int] = field(default_factory=list)
     drafted_by_depth: list[int] = field(default_factory=list)
     accept_probability_sum_by_depth: list[float] = field(default_factory=list)
@@ -8567,6 +8611,7 @@ def generate_mtpk(
         and not exact_a3b_target_prefix
         and _env_truthy("MTPLX_COMPILED_TARGET_PREFIX")
     )
+    fixed_m4_admission: dict[str, object] = {}
     qwen4_fixed_m4_compiled_verify = (
         # M-RoPE tables slice by the host offset; the fixed bank carries a
         # tensor offset, so vision requests keep main's verify routes.
@@ -8578,6 +8623,10 @@ def generate_mtpk(
             max_tokens=max_tokens,
             cached_tokens=int(getattr(prompt_state, "cached_tokens", 0) or 0),
             prompt_tokens=len(prompt_ids),
+            speculative_depth=speculative_depth,
+            session_bank=session_bank,
+            prompt_ids=prompt_ids,
+            receipt=fixed_m4_admission,
         )
     )
     compiled_verify_bank = (
@@ -13290,6 +13339,7 @@ def generate_mtpk(
             _forkev_snapshot = {"enabled": True, "errors": _forkev.errors + 1}
     stats = GenerationStats(
         mode="mtpk",
+        fixed_m4_admission=fixed_m4_admission,
         forkev=_forkev_snapshot,
         constraint_active=constraint is not None,
         constraint_completed=(
