@@ -1122,11 +1122,11 @@ def _record_permanent_eager(reason: str, *, once: bool = False) -> None:
 # Process-global compiled verify callables, keyed by
 # (runtime id, capture backend, state spec, verify length, hidden variant,
 # bucket). The bank is per-generation; without sharing, every request pays a
-# fresh trace. Values are (compiled_fn, trace_host) where trace_host["bank"]
-# is re-pointed to the live bank before each dispatch so internal retraces
+# fresh trace. Values are (compiled_fn, trace_host, runtime_ref), where the
+# host's WEAK bank reference is re-pointed before each dispatch so retraces
 # (mx.compile re-traces on leaf-shape changes) always use live scratch
 # containers. See CompiledVerifyBank._shared_or_new_verify_step.
-_SHARED_VERIFY_STEPS: dict[tuple, tuple[Any, dict[str, Any]]] = {}
+_SHARED_VERIFY_STEPS: dict[tuple, tuple[Any, dict[str, Any], Any]] = {}
 
 
 def _prewarm_enabled() -> bool:
@@ -3249,10 +3249,13 @@ class CompiledVerifyBank:
             # id() can be recycled after a model swap frees the old runtime;
             # a stale callable would replay graphs bound to freed weights.
             if runtime_ref() is self.runtime:
-                host["bank"] = self
+                host["bank_ref"] = weakref.ref(self)
                 return fn
             _SHARED_VERIFY_STEPS.pop(global_key, None)
-        host = {"bank": self}
+        # Programs may outlive requests. Keeping the bank here also keeps its
+        # shadow KV and traced state alive after the request/session is gone.
+        # The dispatch owns the bank; the process cache owns only the program.
+        host = {"bank_ref": weakref.ref(self)}
         fn = mx.compile(
             self._make_verify_step(length, hidden_variant, trace_host=host)
         )
@@ -3267,15 +3270,14 @@ class CompiledVerifyBank:
     ):
         spec = list(self._spec or [])
         layout = self._capture_layout()
-        bank = self
-        static_host = {"bank": self}
+        static_host = {"bank_ref": weakref.ref(self)}
         host = trace_host if trace_host is not None else static_host
-
-        del bank
 
         def verify_step(input_ids, *args):
             # Python body executes at trace time only; replays skip it.
-            live = host["bank"]
+            live = host["bank_ref"]()
+            if live is None:
+                raise RuntimeError("compiled verifier traced without a live request bank")
             shadow = live._shadow
             if live._prepare_compiled_aux is not None:
                 compiled_aux, *state_in = args
