@@ -42,6 +42,8 @@ Let `G` be tokens actually delivered, `N` completed speculative rounds, `T` full
 
 `speedup = (G / T) * t_AR`
 
+The acceptance threshold holds the recorded cycle cost fixed. Re-measure when context, hardware, route or acceptance changes: rejected drafts also change repair cost.
+
 MTP helps when `T/N < (G/N) * t_AR`. Include drafting, verification, commit/repair, host overhead and stalls in the full cycle; verify time alone is insufficient.
 
 For fixed depth `D`, away from start/end boundaries and copy routes, aggregate acceptance `q = accepted draft tokens / all proposed draft tokens` gives approximately `G/N = 1 + D*q`. Thus `q_break_even = (cycle_time/t_AR - 1) / D`. At D3, acceptance of 20%, 30%, 40% and 50% buys approximately 1.6, 1.9, 2.2 and 2.5 tokens per round. Each is worthwhile only when its measured round costs less than that many AR steps.
@@ -55,3 +57,13 @@ Flight samples are progress-driven at approximately one-second intervals. Missin
 Allocator active bytes, free allocator-cache bytes, bank logical bytes, process RSS and physical system pressure measure different things. Shared cache references must not be counted twice. Releasing a logical bank entry is not proof that physical memory was freed: re-read allocator counters. `cache_cleared` records the allocator cache, not deletion of the useful prompt prefix.
 
 Test anonymous clients both with and without reasoning history, multiple distinct conversations, SSD partial restores, long outputs, edited prefixes, cancellation/retry and normal background apps. Keep the historical baseline and candidate evidence; never infer cross-chip speedups from an M5 fallback run.
+
+## Repeat the same request at AR, D1, D2 and D3
+
+```sh
+python scripts/mtp_cost_probe.py request.json \
+  --request-log /path/to/run/requests.jsonl --out /path/to/new/probe \
+  --base-url http://127.0.0.1:8211 --repeats 2
+```
+
+Supply a normal chat-completion request JSON with the actual coding task and native sampler. This tool reverses depth order on alternate rounds, verifies actual fan ramp before each request, checks that the server honored the mode/depth, retains full timestamped streams and exact receipts, and computes economics against measured AR. It introduces no output or reasoning cap. Tool calls are recorded as model output; use the real client to execute and validate a whole task.

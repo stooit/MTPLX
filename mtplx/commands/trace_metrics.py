@@ -76,7 +76,7 @@ def sample_intervals(events: list[dict]) -> list[dict]:
             continue
         row = {"start_s": prev["ts"], "end_s": cur["ts"], "duration_s": duration,
                "observation_gap": duration > 2.5, "context_tokens": cur.get("ctx")}
-        for key in ("gen", "vc", "vt", "dt", "at", "ct", "rt", "st", "bt", "cct"):
+        for key in ("gen", "vc", "vt", "dt", "at", "ct", "rt", "st", "bt", "cct", "cv", "evc"):
             before, after = _number(prev.get(key)), _number(cur.get(key))
             row[key] = after - before if before is not None and after is not None and after >= before else None
         for key in ("acc", "drf"):
@@ -90,5 +90,6 @@ def sample_intervals(events: list[dict]) -> list[dict]:
         row["active_memory_bytes"] = cur.get("mem_active")
         row["cache_memory_bytes"] = cur.get("mem_cache")
         row["peak_memory_bytes"] = cur.get("mem_peak")
+        row["verify_route"] = cur.get("route")
         result.append(row)
     return result

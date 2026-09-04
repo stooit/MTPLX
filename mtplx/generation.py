@@ -1953,6 +1953,9 @@ class _DecodeTrace:
                             "snapshot_time_s": totals.get("snapshot_time_s"),
                             "bonus_time_s": totals.get("bonus_time_s"),
                             "capture_commit_time_s": totals.get("capture_commit_time_s"),
+                            "verify_route": totals.get("verify_route"),
+                            "compiled_verify_calls": totals.get("compiled_verify_calls"),
+                            "eager_verify_calls": totals.get("eager_verify_calls"),
                             # Host allocator counters only: no mx.eval or GPU
                             # synchronization on this existing ~1 Hz hook.
                             "active_memory_bytes": mx.get_active_memory(),
@@ -9629,6 +9632,12 @@ def generate_mtpk(
             "trace_accounting_time_s": trace_accounting_time_s,
             "accepted_by_depth": list(accepted_by_depth),
             "drafted_by_depth": list(drafted_by_depth),
+            "verify_route": (compiled_verify_bank.last_dispatch_route()
+                             if compiled_verify_bank is not None else None),
+            "compiled_verify_calls": (compiled_verify_bank.stats["compiled_calls"]
+                                      if compiled_verify_bank is not None else None),
+            "eager_verify_calls": (compiled_verify_bank.stats["fallback_calls"]
+                                   if compiled_verify_bank is not None else None),
             "accept_probability_sum_by_depth": list(accept_probability_sum_by_depth),
             "draft_confidence_width_stops": draft_confidence_width_stops,
             "draft_confidence_sum_by_depth": list(draft_confidence_sum_by_depth),

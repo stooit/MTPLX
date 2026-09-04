@@ -15593,6 +15593,8 @@ def _metrics_envelope(
         "mtp_history_position_base": int(stats.get("mtp_history_position_base") or 0),
         **({"fixed_m4_admission": stats["fixed_m4_admission"]}
            if stats.get("fixed_m4_admission") else {}),
+        **({"compiled_verify": stats["graphbank"]["compiled_verify"]}
+           if (stats.get("graphbank") or {}).get("compiled_verify") else {}),
         **_maintenance_timing_stats(stats),
         "session_cache_hit": bool(session_cache_hit),
         "cache_miss_reason": cache_miss_reason,
@@ -30217,6 +30219,7 @@ def create_app(state: ServerState) -> FastAPI:
         )
         resolved_session_id: str | None = None
         resolved_session_source: str | None = None
+        resolved_session_diagnostic: dict[str, Any] = {}
         early_postcommit_handled = False
         early_postcommit_wait: dict[str, Any] | None = None
         early_cross_session_yield: dict[str, Any] | None = None
@@ -30243,6 +30246,7 @@ def create_app(state: ServerState) -> FastAPI:
                         chat_id=_request_extra(request, "chat_id"),
                         conversation_id=_request_extra(request, "conversation_id"),
                         prompt_ids=prompt_ids,
+                        diagnostic_out=resolved_session_diagnostic,
                     )
                 )
             except Exception:
@@ -30558,6 +30562,7 @@ def create_app(state: ServerState) -> FastAPI:
                     chat_id=_request_extra(request, "chat_id"),
                     conversation_id=_request_extra(request, "conversation_id"),
                     prompt_ids=prompt_ids,
+                    diagnostic_out=resolved_session_diagnostic,
                 )
             session = state.sessions.get_or_create(session_id)
             session.last_cache_miss_reason = cache_miss_reason
@@ -30591,10 +30596,9 @@ def create_app(state: ServerState) -> FastAPI:
             _record_tool_parse_event(state, event="tool_template_fallback")
         if request_observability.get("request_client_hint") == "android_studio":
             _record_tool_parse_event(state, event="android_studio_request_detected")
-        prefix_diagnostic = getattr(state.sessions, "last_prefix_diagnostic", None)
-        if isinstance(prefix_diagnostic, dict):
+        if resolved_session_diagnostic:
             request_observability["request_session_prefix_diagnostic"] = (
-                prefix_diagnostic
+                resolved_session_diagnostic
             )
         session_keep_live_ref = _session_keep_live_refs_for_request(
             session_source=session_source,

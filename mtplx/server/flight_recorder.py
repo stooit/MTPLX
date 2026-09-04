@@ -49,6 +49,8 @@ _LIVE_FIELDS = (
     ("snapshot_time_s", "st"), ("bonus_time_s", "bt"),
     ("capture_commit_time_s", "cct"), ("active_memory_bytes", "mem_active"),
     ("cache_memory_bytes", "mem_cache"), ("peak_memory_bytes", "mem_peak"),
+    ("verify_route", "route"), ("compiled_verify_calls", "cv"),
+    ("eager_verify_calls", "evc"),
 )
 
 
