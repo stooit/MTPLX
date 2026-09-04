@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import glob
 import json
 import os
 import re
@@ -25,8 +24,9 @@ import sqlite3
 import sys
 import time
 import urllib.request
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 LOGS_DIR = Path(os.path.expanduser("~/.mtplx/logs"))
 METRICS_DIR = Path(os.path.expanduser("~/.mtplx/metrics"))
@@ -43,7 +43,7 @@ _SPARK = "▁▂▃▄▅▆▇█"
 def _fmt_clock(ts: float | None) -> str:
     if not ts:
         return "-"
-    return _dt.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S")
+    return _dt.datetime.fromtimestamp(ts, tz=_dt.UTC).astimezone().strftime("%m-%d %H:%M:%S")
 
 
 def _fmt_dur(seconds: float | None) -> str:
@@ -126,25 +126,31 @@ def _load_jsonl(path: Path) -> list[dict]:
     return records
 
 
-def _load_receipts(port: int, since_s: float | None = None) -> list[dict]:
-    records = _load_jsonl(LOGS_DIR / f"request-log-{port}.jsonl")
+def _load_receipts(port: int, since_s: float | None = None, *, path: str | None = None) -> list[dict]:
+    records = _load_rotated(Path(path).expanduser() if path else LOGS_DIR / f"request-log-{port}.jsonl")
     if since_s is not None:
         records = [r for r in records if float(r.get("logged_at_s") or 0) >= since_s]
     return records
 
 
-def _load_flight(port: int, since_s: float | None = None) -> list[dict]:
+def _load_rotated(path: Path) -> list[dict]:
+    generations = []
+    for candidate in path.parent.glob(path.name + ".*"):
+        suffix = candidate.name.rsplit(".", 1)[-1]
+        if suffix.isdigit():
+            generations.append((int(suffix), candidate))
+    return [row for _, part in sorted(generations, reverse=True)
+            for row in _load_jsonl(part)] + _load_jsonl(path)
+
+
+def _source_port(args: argparse.Namespace) -> int | None:
+    return (args.port or 0) if getattr(args, "request_log", None) else _detect_port(args.port)
+
+
+def _load_flight(port: int, since_s: float | None = None, *, path: str | None = None) -> list[dict]:
     """Flight events oldest-first across the rotation cascade
     (flight-<port>.jsonl.N .. .1, then the live file)."""
-    events: list[dict] = []
-    generations: list[tuple[int, Path]] = []
-    for path in METRICS_DIR.glob(f"flight-{port}.jsonl.*"):
-        suffix = path.name.rsplit(".", 1)[-1]
-        if suffix.isdigit():
-            generations.append((int(suffix), path))
-    for _, path in sorted(generations, reverse=True):
-        events.extend(_load_jsonl(path))
-    events.extend(_load_jsonl(METRICS_DIR / f"flight-{port}.jsonl"))
+    events = _load_rotated(Path(path).expanduser() if path else METRICS_DIR / f"flight-{port}.jsonl")
     if since_s is not None:
         events = [e for e in events if float(e.get("ts") or 0) >= since_s]
     return events
@@ -242,6 +248,14 @@ def _match_receipt(message: dict, receipts: list[dict], used: set[int]) -> dict 
     """Best receipt for an assistant message: exact session ids narrow the pool,
     then nearest logged_at_s to the message completion, with a token cross-foot
     tiebreak (completion_tokens ~ output+reasoning) for historical fuzzy joins."""
+    parent_entry = message.get("_parent_entry_id")
+    if parent_entry:
+        exact = [(i, r) for i, r in enumerate(receipts) if i not in used
+                 and r.get("request_client_entry_id") == parent_entry]
+        # Retries may share a leaf. Do not claim an exact join when ambiguous.
+        if len(exact) == 1:
+            used.add(exact[0][0])
+            return exact[0][1]
     msg_time = message.get("time") or {}
     completed_s = (msg_time.get("completed") or 0) / 1000.0
     created_s = (msg_time.get("created") or 0) / 1000.0
@@ -252,6 +266,9 @@ def _match_receipt(message: dict, receipts: list[dict], used: set[int]) -> dict 
     best, best_score = None, None
     for idx, receipt in enumerate(receipts):
         if idx in used:
+            continue
+        turn = receipt.get("request_client_turn_id")
+        if turn and message.get("parentID") and turn != message["parentID"]:
             continue
         logged = float(receipt.get("logged_at_s") or 0)
         anchor = completed_s or (created_s + float(receipt.get("request_elapsed_s") or 0))
@@ -275,10 +292,13 @@ def _match_receipt(message: dict, receipts: list[dict], used: set[int]) -> dict 
 
 
 def _join_session(
-    conn: sqlite3.Connection, session_id: str, receipts: list[dict], flight: list[dict]
+    conn: sqlite3.Connection | None, session_id: str, receipts: list[dict], flight: list[dict],
+    *, session: dict | None = None, messages: list[dict] | None = None,
 ) -> dict:
-    session = _opencode_session_row(conn, session_id) or {"id": session_id}
-    messages = _opencode_messages(conn, session_id)
+    if session is None:
+        session = _opencode_session_row(conn, session_id) or {"id": session_id}
+    if messages is None:
+        messages = _opencode_messages(conn, session_id)
     scoped = [r for r in receipts if r.get("session_id") == session_id]
     pool = scoped or receipts
     flight_rids = _flight_by_rid(flight)
@@ -301,10 +321,35 @@ def _join_session(
                 "turn": turn_no,
                 "message": message,
                 "receipt": receipt,
+                "join": ("exact Pi parent entry" if receipt and message.get("_parent_entry_id")
+                         and receipt.get("request_client_entry_id") == message["_parent_entry_id"]
+                         else "exact client turn; request by time/tokens" if receipt and receipt.get("request_client_turn_id")
+                         else "session/time/tokens"),
                 "flight": flight_rids.get(rid, []) if rid else [],
             }
         )
-    return {"session": session, "turns": turns, "receipt_pool_scoped": bool(scoped)}
+    return {"session": session, "turns": turns, "receipt_pool_scoped": bool(scoped),
+            "join_mode": "exact session; requests matched by time and tokens" if scoped else "time+token fallback",
+            "unmatched_receipts": [r for i, r in enumerate(pool) if i not in used]}
+
+
+def _load_joined(args: argparse.Namespace, receipts: list[dict], flight: list[dict]):
+    pi_path = getattr(args, "pi_session", None)
+    if pi_path:
+        from .trace_clients import load_pi_session
+
+        session, messages = load_pi_session(Path(pi_path).expanduser())
+        if not session.get("id"):
+            raise ValueError("Pi transcript has no session identity")
+        return None, _join_session(None, session["id"], receipts, flight,
+                                   session=session, messages=messages)
+    conn = _opencode_connect(Path(args.db))
+    if conn is None:
+        raise ValueError(f"OpenCode database not found: {args.db}")
+    session_id = _resolve_session_arg(conn, args.session)
+    if not session_id:
+        raise ValueError("no OpenCode sessions found")
+    return conn, _join_session(conn, session_id, receipts, flight)
 
 
 # ---------------------------------------------------------------------------
@@ -417,8 +462,8 @@ def _cmd_sessions(args: argparse.Namespace) -> int:
     if conn is None:
         print(f"opencode db not found: {args.db}", file=sys.stderr)
         return 1
-    port = _detect_port(args.port)
-    receipts = _load_receipts(port) if port else []
+    port = _source_port(args)
+    receipts = _load_receipts(port, path=getattr(args, "request_log", None)) if port is not None else []
     sessions = _opencode_sessions(conn, limit=args.limit)
     by_session: dict[str, int] = {}
     for receipt in receipts:
@@ -507,21 +552,18 @@ def _turn_row(turn: dict) -> dict:
 
 
 def _cmd_session(args: argparse.Namespace) -> int:
-    conn = _opencode_connect(Path(args.db))
-    if conn is None:
-        print(f"opencode db not found: {args.db}", file=sys.stderr)
-        return 1
-    session_id = _resolve_session_arg(conn, args.session)
-    if not session_id:
-        print("no opencode sessions found", file=sys.stderr)
-        return 1
-    port = _detect_port(args.port)
+    port = _source_port(args)
     if port is None:
         print("no request logs found under ~/.mtplx/logs", file=sys.stderr)
         return 1
-    receipts = _load_receipts(port)
-    flight = _load_flight(port)
-    joined = _join_session(conn, session_id, receipts, flight)
+    receipts = _load_receipts(port, path=getattr(args, "request_log", None))
+    flight = _load_flight(port, path=getattr(args, "flight_log", None))
+    try:
+        _conn, joined = _load_joined(args, receipts, flight)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    session_id = joined["session"]["id"]
     rows = [_turn_row(t) for t in joined["turns"] if t["kind"] == "assistant"]
     flags = _detect_pathologies(joined["turns"])
 
@@ -537,7 +579,7 @@ def _cmd_session(args: argparse.Namespace) -> int:
         "directory": joined["session"].get("directory"),
         "port": port,
         "turns": len(rows),
-        "join_mode": "exact session_id" if joined["receipt_pool_scoped"] else "time+token fallback",
+        "join_mode": joined["join_mode"],
         "warm_cache_reuse": round(reuse, 4) if reuse is not None else None,
         "total_completion_tokens": sum(r["completion_tokens"] or 0 for r in rows),
         "total_client_reasoning_tokens": sum(r["client_reasoning_tokens"] or 0 for r in rows),
@@ -631,11 +673,11 @@ _RECEIPT_GROUPS: list[tuple[str, list[str]]] = [
 
 
 def _cmd_request(args: argparse.Namespace) -> int:
-    port = _detect_port(args.port)
+    port = _source_port(args)
     if port is None:
         print("no request logs found under ~/.mtplx/logs", file=sys.stderr)
         return 1
-    receipts = _load_receipts(port)
+    receipts = _load_receipts(port, path=getattr(args, "request_log", None))
     if not receipts:
         print(f"no receipts for port {port}", file=sys.stderr)
         return 1
@@ -656,10 +698,13 @@ def _cmd_request(args: argparse.Namespace) -> int:
         return 1
 
     rid = receipt.get("request_id")
-    flight = _flight_by_rid(_load_flight(port)).get(rid, []) if rid else []
+    flight = _flight_by_rid(_load_flight(port, path=getattr(args, "flight_log", None))).get(rid, []) if rid else []
     samples = [e for e in flight if e.get("ev") == "s"]
     if args.json:
-        print(json.dumps({"receipt": receipt, "flight": flight}, indent=2))
+        from .trace_metrics import mtp_economics, sample_intervals
+        print(json.dumps({"receipt": receipt, "flight": flight,
+                          "economics": mtp_economics(receipt, getattr(args, "ar_tok_s", None)),
+                          "intervals": sample_intervals(flight)}, indent=2))
         return 0
 
     index = receipts.index(receipt)
@@ -677,7 +722,7 @@ def _cmd_request(args: argparse.Namespace) -> int:
                     val = json.dumps(val, separators=(",", ":"))
                 pairs.append((key, val))
         _print_kv_block(title, pairs)
-    rest = sorted(k for k in receipt.keys() if k not in shown)
+    rest = sorted(k for k in receipt if k not in shown)
     if rest and args.all:
         _print_kv_block("other", [(k, receipt[k]) for k in rest])
     elif rest:
@@ -856,5 +901,3 @@ def cmd_trace(args: argparse.Namespace) -> int:
         print(f"unknown trace action: {action}", file=sys.stderr)
         return 2
     return handler(args)
-
-

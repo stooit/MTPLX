@@ -19626,7 +19626,13 @@ def _request_observability(
             "x-mtplx-request-id",
         }
     }
+    client_links = {}
+    for name in ("turn", "entry"):
+        value = str(headers.get(f"x-mtplx-client-{name}-id") or "")
+        if _CLIENT_REQUEST_ID_RE.fullmatch(value):
+            client_links[f"request_client_{name}_id"] = value
     return {
+        **client_links,
         "request_message_count": len(request.messages),
         "request_message_roles": [message.role for message in request.messages],
         "request_message_chars": [

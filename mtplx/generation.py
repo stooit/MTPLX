@@ -1904,6 +1904,17 @@ class _DecodeTrace:
                             "verify_calls": totals.get("verify_calls"),
                             "verify_time_s": totals.get("verify_time_s"),
                             "draft_time_s": totals.get("draft_time_s"),
+                            "accept_time_s": totals.get("accept_time_s"),
+                            "commit_time_s": totals.get("commit_time_s"),
+                            "repair_time_s": totals.get("repair_time_s"),
+                            "snapshot_time_s": totals.get("snapshot_time_s"),
+                            "bonus_time_s": totals.get("bonus_time_s"),
+                            "capture_commit_time_s": totals.get("capture_commit_time_s"),
+                            # Host allocator counters only: no mx.eval or GPU
+                            # synchronization on this existing ~1 Hz hook.
+                            "active_memory_bytes": mx.get_active_memory(),
+                            "cache_memory_bytes": mx.get_cache_memory(),
+                            "peak_memory_bytes": mx.get_peak_memory(),
                         }
                     )
                 except Exception:

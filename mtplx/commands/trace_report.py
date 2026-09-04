@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import html
+import json
 import math
 import subprocess
 import sys
@@ -33,17 +34,16 @@ from typing import Any
 from .trace import (
     METRICS_DIR,
     _detect_pathologies,
-    _detect_port,
     _fmt_dur,
     _fmt_tok,
-    _join_session,
     _load_flight,
+    _load_joined,
     _load_receipts,
-    _opencode_connect,
     _opencode_parts,
-    _resolve_session_arg,
+    _source_port,
     _turn_row,
 )
+from .trace_metrics import mtp_economics, sample_intervals
 
 # dataviz reference palette, light mode (validated with validate_palette.js)
 _MUT, _AXIS, _SURF = "#898781", "#c3c2b7", "#fcfcfb"
@@ -537,7 +537,7 @@ def _sec_digest(digest: list[dict]) -> str:
 def _user_snippet(conn: Any, message: dict) -> str | None:
     texts: list[str] = []
     try:
-        for part in _opencode_parts(conn, message.get("_id") or ""):
+        for part in (message["_parts"] if "_parts" in message else _opencode_parts(conn, message.get("_id") or "")):
             if part.get("type") == "text" and part.get("text"):
                 texts.append(str(part["text"]))
         if not texts:
@@ -554,11 +554,61 @@ def _user_snippet(conn: Any, message: dict) -> str | None:
 
 def _part_chars(conn: Any, message: dict) -> tuple[int | None, int | None]:
     try:
-        parts = _opencode_parts(conn, message.get("_id") or "")
+        parts = message["_parts"] if "_parts" in message else _opencode_parts(conn, message.get("_id") or "")
         return (sum(len(p.get("text") or "") for p in parts if p.get("type") == "reasoning"),
                 sum(len(p.get("text") or "") for p in parts if p.get("type") == "text"))
     except Exception:  # noqa: BLE001
         return None, None
+
+
+def _sec_inspector(joined: dict, conn: Any, ar_tok_s: float | None) -> str:
+    """One request selector and time scrubber over the original evidence."""
+    requests = []
+    for turn in joined["turns"]:
+        if turn["kind"] != "assistant":
+            continue
+        receipt = turn.get("receipt") or {}
+        message = turn["message"]
+        parts = (message["_parts"] if "_parts" in message
+                 else _opencode_parts(conn, message.get("_id") or ""))
+        requests.append({"turn": turn["turn"], "request_id": receipt.get("request_id"),
+                         "join": turn.get("join"), "receipt": receipt,
+                         "economics": mtp_economics(receipt, ar_tok_s),
+                         "intervals": sample_intervals(turn.get("flight", [])),
+                         "flight": turn.get("flight", []),
+                         "tools": [p for p in parts if p.get("type") == "tool"]})
+    evidence = {"session": joined["session"], "requests": requests,
+                "unmatched_receipts": joined.get("unmatched_receipts", [])}
+    payload = json.dumps(evidence, ensure_ascii=False).replace("<", "\\u003c")
+    options = ''.join(f'<option value="{i}">Step {r["turn"]} · {_esc(r["request_id"] or "unmatched")}</option>'
+                      for i, r in enumerate(requests))
+    return _card("Request inspector", (
+        '<p class="quiet">Choose an engine step, then scrub its recorded intervals. '
+        'Missing samples remain missing; a long gap is not fabricated zero throughput. '
+        'Verify/draft counters can overlap GPU work and must not be summed as exclusive wall time. '
+        'AR comparisons require a separately measured, matching baseline.</p>'
+        '<label>Engine step <select id="inspect-request">'+options+'</select></label> '
+        '<button id="inspect-export" type="button">Export evidence JSON</button>'
+        '<p id="inspect-summary"></p>'
+        '<label>Recorded interval <input id="inspect-time" type="range" min="0" value="0" step="1"></label>'
+        '<pre id="inspect-sample" style="white-space:pre-wrap"></pre>'
+        '<details><summary>Tool calls and their timing</summary><pre id="inspect-tools" style="white-space:pre-wrap"></pre></details>'
+        '<details><summary>Full engine receipt and MTP economics</summary><pre id="inspect-receipt" style="white-space:pre-wrap"></pre></details>'
+        f'<script type="application/json" id="inspect-data">{payload}</script>'
+        '<script>(()=>{const data=JSON.parse(document.getElementById("inspect-data").textContent);'
+        'const select=document.getElementById("inspect-request"),slider=document.getElementById("inspect-time");'
+        'const put=(id,v)=>document.getElementById(id).textContent=JSON.stringify(v,null,2);'
+        'function render(reset){const r=data.requests[Number(select.value)];if(!r)return;'
+        'slider.max=Math.max(0,r.intervals.length-1);slider.disabled=!r.intervals.length;if(reset)slider.value=0;'
+        'document.getElementById("inspect-summary").textContent="Join: "+r.join+" · "+r.intervals.length+" recorded intervals";'
+        'put("inspect-sample",r.intervals[Number(slider.value)]||{status:"No interval samples"});'
+        'put("inspect-tools",r.tools);put("inspect-receipt",{economics:r.economics,receipt:r.receipt});}'
+        'select.addEventListener("change",()=>render(true));slider.addEventListener("input",()=>render(false));'
+        'document.getElementById("inspect-export").onclick=()=>{const a=document.createElement("a");'
+        'const u=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));'
+        'a.href=u;a.download="mtplx-trace-evidence.json";a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);};'
+        'render(true);})();</script>'
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -622,21 +672,18 @@ _JS = (
 
 
 def cmd_trace_report(args: argparse.Namespace) -> int:
-    conn = _opencode_connect(Path(args.db))
-    if conn is None:
-        print(f"opencode db not found: {args.db}", file=sys.stderr)
-        return 1
-    session_id = _resolve_session_arg(conn, getattr(args, "session", None))
-    if not session_id:
-        print("no opencode sessions found", file=sys.stderr)
-        return 1
-    port = _detect_port(args.port)
+    port = _source_port(args)
     if port is None:
         print("no request logs found under ~/.mtplx/logs", file=sys.stderr)
         return 1
-    receipts = _load_receipts(port)
-    flight = _load_flight(port)
-    joined = _join_session(conn, session_id, receipts, flight)
+    receipts = _load_receipts(port, path=getattr(args, "request_log", None))
+    flight = _load_flight(port, path=getattr(args, "flight_log", None))
+    try:
+        conn, joined = _load_joined(args, receipts, flight)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    session_id = joined["session"]["id"]
     a_turns = [t for t in joined["turns"] if t["kind"] == "assistant"]
     rows = [_enrich(t) for t in a_turns]
     flags = _detect_pathologies(joined["turns"])
@@ -663,7 +710,7 @@ def cmd_trace_report(args: argparse.Namespace) -> int:
         ("Wall time (turns)", _fmt_dur(sum(r["wall_s"] or 0 for r in rows))),
         ("Mean decode", f"{mean_dec:.1f} tok/s" if mean_dec else "-"),
     ]
-    join_mode = "exact session_id" if joined["receipt_pool_scoped"] else "time+token fallback"
+    join_mode = joined["join_mode"]
     session = joined["session"]
     header = (f'<h1>mtplx trace report</h1><p class="meta"><b>{_esc(session_id)}</b>'
               f' · {_esc(session.get("title") or "untitled")}<br>{_esc(session.get("directory") or "-")}'
@@ -688,7 +735,8 @@ def cmd_trace_report(args: argparse.Namespace) -> int:
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>mtplx trace — {_esc(session_id)}</title><style>" + _CSS + "</style></head><body><main>"
             + header + pathology + _sec_timeline(rows) + _sec_cache(rows) + _sec_tps(rows)
-            + _sec_mtp(rows) + _sec_scatter(receipts, session_ids, port) + _sec_digest(digest)
+            + _sec_mtp(rows) + _sec_inspector(joined, conn, getattr(args, "ar_tok_s", None))
+            + _sec_scatter(receipts, session_ids, port) + _sec_digest(digest)
             + '</main><div id="tip"></div><script>' + _JS + "</script></body></html>")
 
     out_path = Path(args.out).expanduser() if args.out else METRICS_DIR / "reports" / f"{session_id}.html"

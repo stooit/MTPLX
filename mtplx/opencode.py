@@ -74,6 +74,9 @@ export const MTPLXSessionHeaders = async () => ({
     if (input?.sessionID) {
       output.headers["x-mtplx-session-id"] = String(input.sessionID);
     }
+    if (input?.message?.id) {
+      output.headers["x-mtplx-client-turn-id"] = String(input.message.id);
+    }
   },
   "chat.params": async (input, output) => {
     const providerID = mtplxProviderID(input);

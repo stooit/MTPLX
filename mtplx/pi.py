@@ -94,6 +94,8 @@ export default function (pi: any) {{
     event.headers["x-mtplx-session-id"] = String(
       ctx.sessionManager.getSessionId(),
     );
+    const leaf = ctx.sessionManager.getLeafId();
+    if (leaf) event.headers["x-mtplx-client-entry-id"] = String(leaf);
   }});
 
   pi.on("before_provider_request", (event: any) => {{
