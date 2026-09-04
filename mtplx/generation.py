@@ -11671,7 +11671,13 @@ def generate_mtpk(
 
         before_verify = None
         if a3b_target_prefix_route is None:
-            if _skip_verify_snapshot():
+            # The family capture lane commits by replaying the GDN recurrences
+            # from the pre-verify snapshot (commit_verified_window), so it needs
+            # that snapshot regardless of MTPLX_SKIP_VERIFY_SNAPSHOT -- the same
+            # rule the block round applies above. The lazy snapshot is
+            # zero-copy, so honouring the skip here only removes the commit's
+            # input and forces the rollback + re-forward fallback.
+            if _skip_verify_snapshot() and not family_capture_commit_active:
                 event["snapshot"] = "skipped_capture_commit_required"
             else:
                 started = time.perf_counter()
