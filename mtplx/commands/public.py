@@ -2250,6 +2250,18 @@ def _exact_paged_env_from_args(args: Any) -> dict[str, str]:
     return exact_paged_attention_env(**_exactness_profile_kwargs(args))
 
 
+
+def _model_config_is_qwen4_exp(model: str) -> bool:
+    """Mirror of the server's qwen4_exp predicate: read the pack config."""
+    try:
+        with open(Path(str(model)) / "config.json", "rb") as fh:
+            cfg = json.load(fh)
+    except Exception:
+        return False
+    mt = str(cfg.get("model_type") or "").lower()
+    tmt = str((cfg.get("text_config") or {}).get("model_type") or "").lower()
+    return "qwen4_exp" in (mt, tmt) or "qwen4_exp_text" in (mt, tmt)
+
 def _depth_sweep_native60(
     *,
     model: str,
@@ -2276,6 +2288,7 @@ def _depth_sweep_native60(
 ) -> dict[str, Any]:
     from mtplx.benchmarks.runners.mtp_depth_sweep import run_mtp_depth_sweep
 
+    _family_batched = _model_config_is_qwen4_exp(model)
     previous = apply_profile_env("performance-cold")
     if runtime_env:
         os.environ.update({key: str(value) for key, value in runtime_env.items()})
@@ -2313,9 +2326,15 @@ def _depth_sweep_native60(
             mtp_cache_policy=mtp_cache_policy,
             mtp_history_policy=mtp_history_policy,
             min_speculative_depth=1,
-            verify_strategy="capture_commit",
+            # qwen4_exp cannot run the qwen3-next structure verify lanes: their
+            # capture stack introspects the qwen3-next DecoderLayer layout
+            # (input_layernorm et al.) and raises on Flash-Next hyper-connection
+            # layers. The family's repair-free lane wraps the batched verify
+            # (MTPLX_FAMILY_CAPTURE_COMMIT), so batched is the base strategy
+            # there -- the same coercion the server applies at boot.
+            verify_strategy="batched" if _family_batched else "capture_commit",
             draft_core=str(draft_core or "stock"),
-            verify_core="linear-gdn-from-conv-tape",
+            verify_core="stock" if _family_batched else "linear-gdn-from-conv-tape",
             draft_lm_head_bits=int(draft_lm_head["bits"]),
             draft_lm_head_group_size=int(draft_lm_head["group_size"]),
             draft_lm_head_mode=str(draft_lm_head["mode"]),
