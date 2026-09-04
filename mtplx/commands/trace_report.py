@@ -139,6 +139,8 @@ def _row_dur(r: dict) -> float:
 
 
 def _share(r: dict) -> str:
+    if r["client_reasoning_tokens"] is None:
+        return ""
     think = r["client_reasoning_tokens"] or 0
     denom = r["completion_tokens"] or (think + (r["client_output_tokens"] or 0))
     return f"{think / denom * 100:.0f}% think" if denom else ""
@@ -706,7 +708,8 @@ def cmd_trace_report(args: argparse.Namespace) -> int:
         ("Turns", str(len(rows))),
         ("Warm cache reuse", f"{reuse * 100:.1f}%" if reuse is not None else "-"),
         ("Completion tokens", _fmt_tok(sum(r["completion_tokens"] or 0 for r in rows))),
-        ("Client think tokens", _fmt_tok(sum(r["client_reasoning_tokens"] or 0 for r in rows))),
+        ("Client think tokens", _fmt_tok(None if any(r["client_reasoning_tokens"] is None for r in rows)
+                                         else sum(r["client_reasoning_tokens"] for r in rows))),
         ("Wall time (turns)", _fmt_dur(sum(r["wall_s"] or 0 for r in rows))),
         ("Mean decode", f"{mean_dec:.1f} tok/s" if mean_dec else "-"),
     ]

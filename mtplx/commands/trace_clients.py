@@ -58,7 +58,7 @@ def load_pi_session(path: Path) -> tuple[dict, list[dict]]:
             else:
                 parts.append(part)
         messages.append({
-            **message, "_id": record["id"], "_parts": parts,
+            **message, "_id": record["id"], "_parts": parts, "_client": "pi",
             "_parent_entry_id": record.get("parentId"),
             "_time_created_s": float(stamp) / 1000,
             "time": {"created": stamp},

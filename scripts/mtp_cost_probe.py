@@ -16,6 +16,7 @@ import shutil
 import statistics
 import subprocess
 import time
+import urllib.error
 import urllib.request
 
 from mtplx.commands.trace_metrics import mtp_economics
@@ -44,7 +45,13 @@ def request(base, body, path):
     gap = 0.
     rid = finish = None
     usage = {}
-    with urllib.request.urlopen(req, timeout=900) as response, path.open("w") as sink:
+    try:
+        response = urllib.request.urlopen(req, timeout=900)
+    except urllib.error.HTTPError as exc:
+        error_path = path.with_suffix(".http-error.json")
+        error_path.write_bytes(exc.read())
+        raise RuntimeError(f"HTTP {exc.code}; response saved to {error_path}") from exc
+    with response, path.open("w") as sink:
         for line in response:
             if not line.startswith(b"data: "):
                 continue

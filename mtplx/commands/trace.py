@@ -329,8 +329,9 @@ def _join_session(
                 "flight": flight_rids.get(rid, []) if rid else [],
             }
         )
+    modes = {t["join"] for t in turns if t["kind"] == "assistant" and t.get("receipt")}
     return {"session": session, "turns": turns, "receipt_pool_scoped": bool(scoped),
-            "join_mode": "exact session; requests matched by time and tokens" if scoped else "time+token fallback",
+            "join_mode": next(iter(modes)) if len(modes) == 1 else "mixed joins; see per-request evidence",
             "unmatched_receipts": [r for i, r in enumerate(pool) if i not in used]}
 
 
@@ -534,13 +535,16 @@ def _turn_row(turn: dict) -> dict:
         "start": created_s,
         "wall_s": (completed_s - created_s) if completed_s and created_s else None,
         "status": status,
+        "join": turn.get("join"),
+        "tool_errors": sum(p.get("state", {}).get("status") == "error"
+                           for p in message.get("_parts", []) if p.get("type") == "tool"),
         "prompt_tokens": receipt.get("prompt_tokens"),
         "cached_tokens": receipt.get("cached_tokens"),
         "new_prefill_tokens": receipt.get("new_prefill_tokens"),
         "cache_source": receipt.get("cache_source"),
         "cache_miss_reason": receipt.get("cache_miss_reason"),
         "completion_tokens": receipt.get("completion_tokens"),
-        "client_reasoning_tokens": tokens["reasoning"],
+        "client_reasoning_tokens": None if message.get("_client") == "pi" else tokens["reasoning"],
         "client_output_tokens": tokens["output"],
         "client_cache_read": tokens["cache_read"],
         "decode_tok_s": receipt.get("decode_tok_s"),
@@ -585,7 +589,8 @@ def _cmd_session(args: argparse.Namespace) -> int:
         "join_mode": joined["join_mode"],
         "warm_cache_reuse": round(reuse, 4) if reuse is not None else None,
         "total_completion_tokens": sum(r["completion_tokens"] or 0 for r in rows),
-        "total_client_reasoning_tokens": sum(r["client_reasoning_tokens"] or 0 for r in rows),
+        "total_client_reasoning_tokens": (None if any(r["client_reasoning_tokens"] is None for r in rows)
+                                          else sum(r["client_reasoning_tokens"] for r in rows)),
         "pathologies": flags,
     }
     if args.json:
