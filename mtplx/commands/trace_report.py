@@ -412,8 +412,7 @@ def _mtp_accept_panel(rows: list[dict]) -> str:
 
 
 def _mtp_time_panel(rows: list[dict]) -> str:
-    """100%-normalized stacked bar per turn splitting decode_elapsed_s into
-    draft / verify / accept / other, absolute seconds always visible."""
+    """Recorded timer shares per turn, with overlaps explicitly labelled."""
     x0, x1, rh = 44.0, 640.0, 26.0
     have, skipped = [], []
     for r in rows:
@@ -447,7 +446,8 @@ def _mtp_time_panel(rows: list[dict]) -> str:
                 body.append(f'<rect x="{cx:.1f}" y="{y}" width="{max(wseg - gap, 0.5):.1f}" height="12" fill="{col}"/>')
             cx += wseg
         ann = (f"draft {_fmt_dur(r['draft_time_s'])} · verify {_fmt_dur(r['verify_time_s'])}"
-               f" · accept {_fmt_dur(r['accept_time_s'])} · other {_fmt_dur(other)} of {_fmt_dur(total)}")
+               f" · accept {_fmt_dur(r['accept_time_s'])} · remainder {_fmt_dur(other)} · wall {_fmt_dur(total)}"
+               + (" (overlapping spans)" if d + v + a > total else ""))
         body.append(f'<text x="{x1 + 10:.1f}" y="{y + 10:.1f}" class="vlab">{_esc(ann)}</text>')
         tip_lines = [f"t{r['turn']} · decode {total:.2f}s"]
         tip_lines.extend(f"{nm} {sec:.2f}s ({sec / denom * 100:.1f}%)" for nm, sec, _c in segs)
@@ -456,10 +456,10 @@ def _mtp_time_panel(rows: list[dict]) -> str:
         tip = "\n".join(tip_lines)
         body.append(f'<rect x="0" y="{y - 3}" width="{_W}" height="{rh}" fill="transparent" data-tip="{_esc(tip)}" tabindex="0"/>')
     legend = _chips([(_BLUE, "draft"), (_ORANGE, "verify"), (_AQUA, "accept"), (_YELLOW, "other (unattributed decode)")])
-    note = _QUIET.format("each bar = that turn's decode_elapsed_s normalized to 100% · absolute seconds annotated per row")
+    note = _QUIET.format("recorded timer shares; when their sum exceeds wall time, spans overlap and the bar is normalized to that sum · absolute seconds and full wall time are shown")
     tail = _QUIET.format("omitted (receipt carries no draft/verify/accept timing): "
                          + ", ".join(skipped)) if skipped else ""
-    return ("<h3>Decode time split (draft / verify / accept / other)</h3>" + note + legend
+    return ("<h3>Recorded decode timers (draft / verify / accept / remainder)</h3>" + note + legend
             + f'<svg viewBox="0 0 {_W} {h}" role="img" aria-label="decode time split">'
             + _pct_grid(x0, x1, float(h)) + "".join(body) + "</svg>" + tail)
 
@@ -701,7 +701,7 @@ def cmd_trace_report(args: argparse.Namespace) -> int:
         lo = min(starts)
         hi = max(r["start"] + _row_dur(r) for r in rows if r["start"])
         day = _dt.datetime.fromtimestamp(lo, tz=_dt.UTC).astimezone()
-        span = f"{day:%Y-%m-%d} {_hms(lo)} → {_hms(hi)}"
+        span = f"{day:%Y-%m-%d} {_hms(lo)} → {_hms(hi)} {day:%Z %z}"
     cards = [
         ("Turns", str(len(rows))),
         ("Warm cache reuse", f"{reuse * 100:.1f}%" if reuse is not None else "-"),

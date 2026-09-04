@@ -323,6 +323,7 @@ def _join_session(
                 "receipt": receipt,
                 "join": ("exact Pi parent entry" if receipt and message.get("_parent_entry_id")
                          and receipt.get("request_client_entry_id") == message["_parent_entry_id"]
+                         and sum(r.get("request_client_entry_id") == message["_parent_entry_id"] for r in pool) == 1
                          else "exact client turn; request by time/tokens" if receipt and receipt.get("request_client_turn_id")
                          else "session/time/tokens"),
                 "flight": flight_rids.get(rid, []) if rid else [],
@@ -526,6 +527,8 @@ def _turn_row(turn: dict) -> dict:
     status = "ok"
     if message.get("error"):
         status = "CANCEL/ERR"
+    elif not receipt:
+        status = "missing receipt" if completed_s else "in progress"
     return {
         "turn": turn["turn"],
         "start": created_s,
