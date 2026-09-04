@@ -4,7 +4,7 @@ import gc
 import weakref
 from types import SimpleNamespace
 
-import mtplx.graphbank as graphbank
+from mtplx import graphbank
 
 
 class Runtime:

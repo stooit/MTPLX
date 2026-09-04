@@ -31,16 +31,18 @@ def mtp_economics(receipt: dict, ar_tok_s: float | None = None) -> dict:
     drafted = receipt.get("drafted_by_depth") or []
     accepted = sum(float(x) for x in acc)
     proposed = sum(float(x) for x in drafted)
+    verify = _number(receipt.get("verify_time_s"))
+    draft = _number(receipt.get("draft_time_s"))
     result: dict[str, Any] = {
         "acceptance_definition": "accepted draft tokens / all proposed draft tokens",
         "acceptance": accepted / proposed if proposed else None,
         "tokens_per_verify": tokens / rounds if tokens and rounds else None,
         "decode_ms_per_token": 1000 * elapsed / tokens if elapsed and tokens else None,
         "verify_ms_per_round": (
-            1000 * float(receipt.get("verify_time_s") or 0) / rounds if rounds else None
+            1000 * verify / rounds if verify is not None and rounds else None
         ),
         "draft_ms_per_round": (
-            1000 * float(receipt.get("draft_time_s") or 0) / rounds if rounds else None
+            1000 * draft / rounds if draft is not None and rounds else None
         ),
         "cycle_ms": 1000 * elapsed / rounds if elapsed and rounds else None,
         "ar_tok_s": ar_tok_s,

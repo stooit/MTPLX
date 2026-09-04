@@ -1475,8 +1475,18 @@ def _qsa_prefill_enabled() -> bool:
         # cannot compile the MPP pipelines (macOS 27, issue #404): honoring
         # the env verbatim there turns into a guaranteed mid-request 500.
         # The probe prints its own diagnostic when it says no.
-        return _qsa_prefill_mpp_compile_ok()
-    return qsa_prefill_lane_auto_supported() and _qsa_prefill_mpp_compile_ok()
+        return _qsa_prefill_producer_compile_ok()
+    return qsa_prefill_lane_auto_supported() and _qsa_prefill_producer_compile_ok()
+
+
+def _qsa_prefill_producer_compile_ok() -> bool:
+    from mtplx.kernels.qsa_indexer_select import qsa_indexer_select_nax_available
+
+    # The portable producer uses bounded MLX score tiles when NAX is absent
+    # (qsa_indexer_prefill_metal). It never dispatches the MPP score kernel.
+    # Requiring that unrelated kernel to compile disables the Steel consumer
+    # on M1-M4 even after a valid native extension has been installed.
+    return not qsa_indexer_select_nax_available() or _qsa_prefill_mpp_compile_ok()
 
 
 def _qsa_prefill_mpp_compile_ok() -> bool:
