@@ -23,6 +23,8 @@ def load_pi_session(path: Path) -> tuple[dict, list[dict]]:
         seen.add(current["id"])
         lineage.append(current)
         current = entries.get(current.get("parentId"))
+    tool_results = {r["message"]["toolCallId"]: r["message"] for r in lineage
+                    if r.get("message", {}).get("role") == "toolResult"}
     messages = []
     for record in reversed(lineage):
         if record.get("type") != "message":
@@ -43,8 +45,16 @@ def load_pi_session(path: Path) -> tuple[dict, list[dict]]:
             if kind == "thinking":
                 parts.append({"type": "reasoning", "text": part.get("thinking", "")})
             elif kind == "toolCall":
+                result = tool_results.get(part.get("id"))
+                state = {"input": part.get("arguments")}
+                if result is not None:
+                    state.update(
+                        status="error" if result.get("isError") else "completed",
+                        output=result.get("content"),
+                        metadata={"result_timestamp_ms": result.get("timestamp")},
+                    )
                 parts.append({"type": "tool", "tool": part.get("name"), "callID": part.get("id"),
-                              "state": {"input": part.get("arguments")}})
+                              "state": state})
             else:
                 parts.append(part)
         messages.append({

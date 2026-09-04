@@ -3552,19 +3552,21 @@ def test_pi_models_config_merge_preserves_other_providers(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
-def test_pi_extension_cap_guard_three_payload_shapes(tmp_path):
+@pytest.mark.parametrize("configured_cap", [None, 8192])
+def test_pi_extension_cap_guard_three_payload_shapes(tmp_path, configured_cap):
     """Execute the Pi request-policy handler under node for the three payload
     shapes: injected default (stripped), explicit cap (preserved), no cap
     (untouched)."""
 
-    from mtplx.pi import (
-        PI_INJECTED_DEFAULT_MAX_TOKENS,
-        build_pi_request_policy_extension_source,
-    )
+    from mtplx.pi import write_pi_models_config
 
-    source = build_pi_request_policy_extension_source(
-        "mtplx-test-model", uncapped=True
+    config = tmp_path / "models.json"
+    result = write_pi_models_config(
+        base_url="http://127.0.0.1:8211/v1", model_id="mtplx-test-model",
+        path=config, context_window=262144, max_tokens=configured_cap,
     )
+    injected_cap = json.loads(config.read_text())["providers"]["mtplx"]["models"][0]["maxTokens"]
+    source = Path(result["request_policy_extension_path"]).read_text()
     # The extension is TypeScript only by annotation; strip ": any" so node
     # can execute the real handler logic unchanged.
     module = tmp_path / "extension.mjs"
@@ -3577,7 +3579,7 @@ const handlers = {{}};
 register({{ on: (name, fn) => {{ handlers[name] = fn; }} }});
 const run = (payload) => handlers["before_provider_request"]({{ payload }});
 const results = {{
-  injected: run({{ model: "mtplx-test-model", max_tokens: {PI_INJECTED_DEFAULT_MAX_TOKENS} }}) ?? null,
+  injected: run({{ model: "mtplx-test-model", max_tokens: {injected_cap} }}) ?? null,
   explicit: run({{ model: "mtplx-test-model", max_tokens: 8192 }}) ?? null,
   absent: run({{ model: "mtplx-test-model" }}) ?? null,
 }};
@@ -3590,8 +3592,11 @@ console.log(JSON.stringify(results));
     )
     results = json.loads(proc.stdout)
     # Injected default: handler returns an override with the cap removed.
-    assert results["injected"] is not None
-    assert "max_tokens" not in results["injected"]
+    if configured_cap is None:
+        assert results["injected"] is not None
+        assert "max_tokens" not in results["injected"]
+    else:
+        assert results["injected"] is None
     # Explicit cap: no override returned — the deliberate cap flows through.
     assert results["explicit"] is None
     # No cap at all: nothing to strip, no override.
