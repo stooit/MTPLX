@@ -10394,6 +10394,7 @@ def generate_mtpk(
                                 return_hidden=True,
                                 hidden_variant=base_hidden_variant,
                                 extended_window=True,
+                                committed_count=len(tokens) - 1,
                             )
                         )
                         event["verify_route"] = (
@@ -10401,6 +10402,12 @@ def generate_mtpk(
                         )
                     else:
                         event["verify_route"] = "ccopy_block"
+                        if compiled_verify_bank is not None:
+                            compiled_verify_bank.reserve_fixed_m4_window(
+                                cache,
+                                committed_count=len(tokens) - 1,
+                                window_tokens=_cc_T,
+                            )
                         _cc_logits, _cc_hidden, _cc_captures = rt.forward_ar_capture(
                             mx.array([[primary] + _cc_block]),
                             cache=cache,
@@ -11796,6 +11803,7 @@ def generate_mtpk(
                             cache=cache,
                             return_hidden=True,
                             hidden_variant=base_hidden_variant,
+                            committed_count=len(tokens) - 1,
                         )
                     )
                     event["verify_route"] = (
@@ -11893,6 +11901,7 @@ def generate_mtpk(
                         cache=cache,
                         return_hidden=True,
                         hidden_variant=base_hidden_variant,
+                        committed_count=len(tokens) - 1,
                     )
                 )
                 event["verify_route"] = (

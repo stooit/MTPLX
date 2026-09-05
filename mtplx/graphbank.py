@@ -1999,26 +1999,31 @@ class CompiledVerifyBank:
                 flush=True,
             )
 
-    def _transition_fixed_m4_generation(
+    def reserve_fixed_m4_window(
         self,
         cache: Any,
         *,
-        committed_count: int,
+        committed_count: int | None = None,
+        window_tokens: int = 4,
     ) -> None:
-        """Grow or reroute one installed fixed-M4 capacity generation.
+        """Reserve every target write into an installed fixed-capacity bank.
 
-        The decision is host-owned: ``committed_count`` advances with the
-        accepted completion prefix, so this boundary check never evaluates a
-        device offset. Within a generation, replay stays branch-free.
+        D1/D2 and copy windows use these same buffers even when their forward
+        runs eager. They must renew capacity before writing, too. Generation
+        supplies its host ledger to avoid a device sync; standalone callers
+        without that ledger use the live cache offset. Generic banks are
+        unchanged. Keep four rows reserved for a possible lazy bonus write.
         """
 
         dispatch = self._fixed_m4_dispatch
-        assert dispatch is not None
-        required_end = (
-            int(dispatch["base_offset"])
-            + max(0, int(committed_count))
-            + 4
+        if dispatch is None:
+            return
+        logical_start = (
+            int(dispatch["base_offset"]) + max(0, int(committed_count))
+            if committed_count is not None
+            else dispatch["qsa_entries"][0].size()
         )
+        required_end = logical_start + max(4, int(window_tokens))
         capacity_needed = required_end > int(dispatch["capacity"])
         route_transition_at = dispatch["route_transition_at"]
         route_needed = (
@@ -2107,7 +2112,7 @@ class CompiledVerifyBank:
     ):
         dispatch = self._fixed_m4_dispatch
         assert dispatch is not None
-        self._transition_fixed_m4_generation(
+        self.reserve_fixed_m4_window(
             cache,
             committed_count=committed_count,
         )
@@ -2221,6 +2226,7 @@ class CompiledVerifyBank:
         return_hidden: bool = True,
         hidden_variant: str | None = None,
         extended_window: bool = False,
+        committed_count: int | None = None,
     ):
         """Compiled verify dispatch.
 
@@ -2241,6 +2247,11 @@ class CompiledVerifyBank:
         global _PREWARM_DONE
         if self._fixed_m4_dispatch is not None:
             self.stats["calls"] += 1
+            self.reserve_fixed_m4_window(
+                cache,
+                committed_count=committed_count,
+                window_tokens=_decode_length(input_ids),
+            )
             if _decode_length(input_ids) == 4:
                 # Without host-owned n-gram inputs (any caller other than the
                 # generation loop's forward_fixed_m4 entrypoint, for example a
