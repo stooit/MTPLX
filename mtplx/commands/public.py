@@ -442,11 +442,37 @@ def _runtime_env_with_model_contract_overrides(
     runtime_env: dict[str, str],
     inspection: dict[str, Any],
     profile: Any,
+    *,
+    model: str | None = None,
 ) -> dict[str, str]:
-    return runtime_env_with_contract_overrides(
+    resolved = runtime_env_with_contract_overrides(
         runtime_env,
         _profile_scoped_model_runtime_contract(inspection, profile),
     )
+    if model is not None and _model_config_is_qwen4_exp(model):
+        from mtplx.profiles import (
+            MODEL_RUNTIME_ENV_OVERRIDE_KEYS,
+            PROFILE_ENV_USER_OVERRIDE_KEYS,
+        )
+        from mtplx.server.openai import (
+            _server_runtime_env_overrides,
+            load_runtime_contract,
+        )
+
+        # Resolve before applying any profile: profile defaults must not look
+        # like operator exports to the serve contract's hardware/pack gates.
+        # Keep the same precedence as serve: explicit runtime env, then the
+        # family overrides (which remove operator-owned lane keys themselves).
+        for key in MODEL_RUNTIME_ENV_OVERRIDE_KEYS | PROFILE_ENV_USER_OVERRIDE_KEYS:
+            value = os.environ.get(key)
+            if value is not None and value.strip():
+                resolved[key] = value
+        contract, _ = load_runtime_contract(model)
+        resolved.update(_server_runtime_env_overrides(
+            SimpleNamespace(model=model, generation_mode="mtp", verify_strategy="batched"),
+            contract.runtime_env_overrides if contract is not None else {},
+        ))
+    return resolved
 
 
 def _bench_run_console_summary(envelope: dict[str, Any]) -> dict[str, Any]:
@@ -2291,6 +2317,8 @@ def _depth_sweep_native60(
     _family_batched = _model_config_is_qwen4_exp(model)
     previous = apply_profile_env("performance-cold")
     if runtime_env:
+        for key in runtime_env:
+            previous.setdefault(key, os.environ.get(key))
         os.environ.update({key: str(value) for key, value in runtime_env.items()})
     draft_lm_head = draft_lm_head or {
         "bits": 4,
@@ -2301,11 +2329,11 @@ def _depth_sweep_native60(
     # the model in-process; pin the serve-path Metal allocator caps first.
     from mtplx.server.openai import apply_memory_caps_preflight
 
-    memory_preflight = apply_memory_caps_preflight(
-        entry="bench.depth_sweep",
-        model=str(model),
-    )
     try:
+        memory_preflight = apply_memory_caps_preflight(
+            entry="bench.depth_sweep",
+            model=str(model),
+        )
         result = run_mtp_depth_sweep(
             model,
             prompt_suite,
@@ -3820,6 +3848,7 @@ def _cmd_tune_candidate(args: Any) -> int:
             profile.env_dict(),
             inspection,
             profile,
+            model=runtime_model,
         )
     )
     draft_lm_head = _model_draft_lm_head_spec(inspection, profile)
@@ -6111,6 +6140,7 @@ def _cmd_bench_run(args: Any) -> int:
         runtime_env,
         inspection,
         selected_profile,
+        model=runtime_model,
     )
     draft_lm_head = _model_draft_lm_head_spec(inspection, selected_profile)
     draft_sampler = _model_draft_sampler_spec(inspection, selected_profile)
