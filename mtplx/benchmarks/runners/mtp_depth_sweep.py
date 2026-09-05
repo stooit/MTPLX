@@ -254,6 +254,7 @@ def run_mtp_depth_sweep(
             ar_rows.append(
                 {
                     "prompt_id": case.id,
+                    "prompt_tokens": len(ids),
                     "category": case.category,
                     "generation_started_at": generation_started_at,
                     "generation_ended_at": generation_ended_at,
@@ -346,6 +347,7 @@ def run_mtp_depth_sweep(
             rows.append(
                 {
                     "prompt_id": case.id,
+                    "prompt_tokens": len(ids),
                     "category": case.category,
                     "prompt_sha256": case.prompt_sha256,
                     "generation_started_at": generation_started_at,

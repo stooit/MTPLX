@@ -60,6 +60,13 @@ Test anonymous clients both with and without reasoning history, multiple distinc
 
 ## Repeat the same request at AR, D1, D2 and D3
 
+`mtplx tune` measures its selected calibration suite. Its effective per-case
+budget is the smaller of `--max-tokens` and the suite's `max_tokens`; the
+bundled warm-coding case uses 512. Raw rows record `prompt_tokens` and
+`token_budget`. To test a larger calibration window, supply a custom suite
+with that budget and raise the command's bound. Use the uncapped request
+replay below and real clients to evaluate long coding sessions.
+
 ```sh
 python scripts/mtp_cost_probe.py request.json \
   --request-log /path/to/run/requests.jsonl --out /path/to/new/probe \
