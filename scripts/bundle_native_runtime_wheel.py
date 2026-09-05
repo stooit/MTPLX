@@ -6,11 +6,13 @@ This builds a local artifact only; it never uploads or installs anything.
 """
 
 import argparse
+from email.parser import BytesParser
 import hashlib
 import json
 from pathlib import Path
 
 from packaging.tags import Tag
+from packaging.requirements import Requirement
 from packaging.utils import parse_wheel_filename
 from wheel.wheelfile import WheelFile
 
@@ -35,6 +37,12 @@ def main():
     if output.exists():
         parser.error(f"Refusing to overwrite {output}")
     with WheelFile(args.runtime) as core, WheelFile(args.native) as native:
+        metadata_name = next(n for n in native.namelist() if n.endswith(".dist-info/METADATA"))
+        native_metadata = BytesParser().parsebytes(native.read(metadata_name))
+        native_requirements = native_metadata.get_all("Requires-Dist", [])
+        mlx_pins = [Requirement(r) for r in native_requirements if Requirement(r).name == "mlx"]
+        if len(mlx_pins) != 1 or not str(mlx_pins[0].specifier).startswith("=="):
+            parser.error("Native wheel must declare its exact MLX runtime ABI dependency")
         members = [n for n in native.namelist() if n.startswith("mtplx_qsa_kernels/")]
         for required in ("NOTICE", "LICENSE.txt", "MLX_LICENSE.txt"):
             if f"mtplx_qsa_kernels/{required}" not in members:
@@ -57,6 +65,12 @@ def main():
                         data = ("\n".join([*lines, "Root-Is-Purelib: false", f"Tag: {tag}", ""])).encode()
                     elif archive is core and name.endswith(".dist-info/top_level.txt"):
                         data += b"mtplx_qsa_kernels\n"
+                    elif archive is core and name.endswith(".dist-info/METADATA"):
+                        metadata = BytesParser().parsebytes(data)
+                        for requirement in native_requirements:
+                            if requirement not in metadata.get_all("Requires-Dist", []):
+                                metadata["Requires-Dist"] = requirement
+                        data = metadata.as_bytes()
                     bundled.writestr(archive.getinfo(name), data)
             bundled.writestr("mtplx/native_build_receipt.json", json.dumps(provenance, indent=2))
             # WheelFile writes a new RECORD for the complete distribution.
