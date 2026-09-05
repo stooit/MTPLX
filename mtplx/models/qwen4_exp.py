@@ -1595,14 +1595,17 @@ def _qsa_large_prefill_enabled(rows: int, total_tokens: int) -> bool:
     # existing exact cache path and reserves this matrix-shaped lane for the
     # prompt/SSD-restored prefill it was designed to accelerate.
     return (
-        _qsa_prefill_enabled()
-        and current_attention_phase() == "prefill"
+        current_attention_phase() == "prefill"
         and int(rows) >= _qsa_prefill_min_rows()
         # Gate on the earliest query in the chunk, not its final T.  A large
         # restored/SSD chunk may straddle the crossover; routing it by final T
         # would make its early rows pay the exact fixed-cost pathology this
         # guard exists to avoid.
         and int(total_tokens) - int(rows) >= _qsa_prefill_min_context()
+        # Capability/pipeline resolution is only useful for eligible prefill
+        # chunks. Never pay its imports and native readiness checks on every
+        # AR or speculative decode layer, especially on portable consumers.
+        and _qsa_prefill_enabled()
     )
 
 
