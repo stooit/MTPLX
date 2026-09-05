@@ -430,10 +430,10 @@ def _detect_pathologies(turns: list[dict]) -> list[str]:
         flags.append(f"CAP APPLIED on {caps} turn(s)")
 
     # think explosion after a small-think turn (re-derivation signature)
-    thinks = [
-        _msg_tokens(t["message"])["reasoning"] for t in assistant
-    ]
+    thinks = [(t["message"].get("tokens") or {}).get("reasoning") for t in assistant]
     for i in range(1, len(thinks)):
+        if thinks[i] is None or thinks[i - 1] is None:
+            continue
         if thinks[i] > 20_000 and thinks[i] > 5 * max(thinks[i - 1], 1):
             flags.append(
                 f"THINK EXPLOSION turn {assistant[i]['turn']}: {_fmt_tok(thinks[i])} reasoning tokens "
@@ -441,15 +441,18 @@ def _detect_pathologies(turns: list[dict]) -> list[str]:
             )
             break
 
-    # cache walls: warm turns paying big new prefill
+    # New file/tool content legitimately requires prefill. Flag a reduction
+    # in reused prefix separately; a large suffix alone is not a cache fault.
     walls = [
         (t["turn"], int(t["receipt"].get("new_prefill_tokens") or 0))
-        for t in assistant[1:]
+        for previous, t in zip(assistant, assistant[1:])
         if int(t["receipt"].get("new_prefill_tokens") or 0) > 1_000
+        and t["receipt"].get("cached_tokens") is not None
+        and int(t["receipt"]["cached_tokens"]) < int(previous["receipt"].get("prompt_tokens") or 0)
     ]
     if walls:
         flags.append(
-            "CACHE WALLS (new_prefill>1k on warm turns): "
+            "REDUCED PREFIX REUSE (inspect history edits, compaction and cache receipts): "
             + ", ".join(f"t{n}={_fmt_tok(w)}" for n, w in walls[:8])
         )
     return flags

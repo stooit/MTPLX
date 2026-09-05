@@ -3,7 +3,7 @@ from argparse import Namespace
 
 import pytest
 
-from mtplx.commands.trace import _load_receipts, _match_receipt, _source_port
+from mtplx.commands.trace import _detect_pathologies, _load_receipts, _match_receipt, _source_port
 from mtplx.commands.trace_clients import load_pi_session
 from mtplx.commands.trace_metrics import mtp_economics, sample_intervals
 
@@ -74,3 +74,16 @@ def test_exact_pi_parent_beats_nearby_time_match_and_cannot_be_reused():
     used = set()
     assert _match_receipt(message, receipts, used) is receipts[1]
     assert used == {1}
+
+
+def test_new_tool_content_and_unknown_reasoning_are_not_false_regressions():
+    turns = [
+        {"kind": "assistant", "turn": 1, "message": {"tokens": {}},
+         "receipt": {"prompt_tokens": 17513, "completion_tokens": 227}},
+        {"kind": "assistant", "turn": 2, "message": {"tokens": {"reasoning": 25000}},
+         "receipt": {"prompt_tokens": 25819, "cached_tokens": 17740,
+                     "new_prefill_tokens": 8079, "completion_tokens": 26000}},
+    ]
+    assert _detect_pathologies(turns) == []
+    turns[1]["receipt"]["cached_tokens"] = 1024
+    assert any("REDUCED PREFIX REUSE" in flag for flag in _detect_pathologies(turns))
