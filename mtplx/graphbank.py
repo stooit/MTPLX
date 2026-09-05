@@ -3270,7 +3270,16 @@ class CompiledVerifyBank:
         fn = mx.compile(
             self._make_verify_step(length, hidden_variant, trace_host=host)
         )
-        _SHARED_VERIFY_STEPS[global_key] = (fn, host, weakref.ref(self.runtime))
+        def release_program(reference, *, key=global_key):
+            # Compiled graphs may hold weight arrays even after their Python
+            # runtime is gone. Drop them at unload, not only on id() reuse.
+            entry = _SHARED_VERIFY_STEPS.get(key)
+            if entry is not None and entry[2] is reference:
+                _SHARED_VERIFY_STEPS.pop(key, None)
+
+        _SHARED_VERIFY_STEPS[global_key] = (
+            fn, host, weakref.ref(self.runtime, release_program)
+        )
         return fn
 
     def _make_verify_step(

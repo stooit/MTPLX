@@ -56,3 +56,20 @@ def test_unshared_callable_does_not_create_a_bank_cycle(monkeypatch):
     del bank
     gc.collect()
     assert reference() is None
+
+
+def test_model_unload_releases_its_shared_programs(monkeypatch):
+    monkeypatch.setattr(graphbank.mx, "compile", lambda fn: fn)
+    monkeypatch.setattr(graphbank, "_SHARED_VERIFY_STEPS", {})
+    monkeypatch.setenv("MTPLX_COMPILED_VERIFY_SHARED_TRACES", "1")
+    runtime = Runtime()
+    bank = _bank(runtime, "model")
+    fn = bank._shared_or_new_verify_step((4, "default", 8192), 4, None)
+    program = weakref.ref(fn)
+    del fn, bank
+    gc.collect()
+    assert program() is not None, "A live model should retain its reusable program"
+    del runtime
+    gc.collect()
+    assert not graphbank._SHARED_VERIFY_STEPS, "Unloaded models leave permanent compiled entries"
+    assert program() is None
