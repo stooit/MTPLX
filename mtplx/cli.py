@@ -2913,7 +2913,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Comma-separated MTP depths or Gemma draft blocks to compare against AR",
     )
-    tune_p.add_argument("--max-tokens", type=int, default=512)
+    tune_p.add_argument("--max-tokens", type=int, default=512,
+                        help="Per-case upper bound; the prompt suite's token budget also applies")
     tune_p.add_argument("--limit", type=int, default=1)
     tune_p.add_argument("--seed", type=int, default=0)
     tune_p.add_argument("--run-id")
