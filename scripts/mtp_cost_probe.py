@@ -11,13 +11,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import shutil
 import statistics
 import subprocess
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from mtplx.commands.trace_metrics import mtp_economics
 
@@ -102,6 +102,8 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--depths", default="0,1,2,3")
     parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--seed-map", type=Path,
+                        help="JSON mapping run labels (r1-d0, ...) to baseline resolved seeds")
     parser.add_argument("--fan-command", default=shutil.which("thermalforge"))
     args = parser.parse_args()
     depths = [int(d) for d in args.depths.split(",")]
@@ -109,13 +111,15 @@ def main():
         parser.error("Need nonnegative depths, positive repeats, and thermalforge")
     raw = args.request.read_bytes()
     body = json.loads(raw)
+    seeds = json.loads(args.seed_map.read_text()) if args.seed_map else {}
     args.out.mkdir(parents=True, exist_ok=False)
     health = read_json(args.base_url + "/health")
     model = read_json(args.base_url + "/v1/models")["data"][0]["id"]
     if health.get("active_requests"):
         raise RuntimeError("Daemon is busy; run the probe after the active client finishes")
     identity = {"request_sha256": hashlib.sha256(raw).hexdigest(), "health": health, "model": model,
-                "fans": fans(args.fan_command), "depths": depths, "repeats": args.repeats}
+                "fans": fans(args.fan_command), "depths": depths, "repeats": args.repeats,
+                "seed_map": seeds}
     (args.out / "identity.json").write_text(json.dumps(identity, indent=2))
     rows = []
     for repeat in range(args.repeats):
@@ -124,6 +128,8 @@ def main():
             sent = {**body, "model": model, "stream": True,
                     "stream_options": {"include_usage": True},
                     "generation_mode": "ar" if depth == 0 else "mtp", "depth": depth}
+            if args.seed_map:
+                sent["seed"] = int(seeds[label])
             fan = fans(args.fan_command)
             (args.out / f"{label}-request.json").write_text(json.dumps(sent, indent=2))
             row = request(args.base_url, sent, args.out / f"{label}-stream.jsonl")

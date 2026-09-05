@@ -67,3 +67,7 @@ python scripts/mtp_cost_probe.py request.json \
 ```
 
 Supply a normal chat-completion request JSON with the actual coding task and native sampler. This tool reverses depth order on alternate rounds, verifies actual fan ramp before each request, checks that the server honored the mode/depth, retains full timestamped streams and exact receipts, and computes economics against measured AR. It introduces no output or reasoning cap. Tool calls are recorded as model output; use the real client to execute and validate a whole task.
+
+For a candidate replay, `--seed-map seeds.json` accepts the baseline's resolved seeds keyed by run label, for example `{"r1-d0": 123, "r1-d3": 456}`. Exact request captures record the resolved seed in `outcome.resolved_seed`. Preserve the request hash and every sampler setting alongside the seeds. Matching seeds reduce one source of variation; different speculative routes can still consume randomness differently.
+
+A repetition-guard stop can arrive with client `finish_reason: "stop"`. The probe retains that sample but exits unsuccessfully and excludes its throughput from MTP economics. A guard pass is not a code-quality pass: run the produced code, its assertions and the actual client follow-up before accepting a performance result.
