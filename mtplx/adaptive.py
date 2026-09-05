@@ -207,6 +207,12 @@ class ExpectedValueDepthPolicy:
         self._cycles_observed += 1
         for index in range(attempted_depth):
             self._attempt_counts[index] += 1
+            # These estimates are multiplied in should_continue_after_draft,
+            # so each is conditional on all earlier drafts being accepted.
+            # Positions beyond the first rejection were never tested; marking
+            # them rejected would count that earlier failure repeatedly.
+            if index > accepted_depths:
+                continue
             accepted = 1.0 if accepted_depths > index else 0.0
             self._accept_ewma[index] = (
                 (1.0 - self.ewma_alpha) * self._accept_ewma[index]
@@ -214,6 +220,7 @@ class ExpectedValueDepthPolicy:
             )
         return {
             "kind": "expected_value",
+            "acceptance_definition": "conditional_on_previous_positions",
             "attempted_depth": attempted_depth,
             "accepted_depths": accepted_depths,
             "next_depth": self.current_depth,
