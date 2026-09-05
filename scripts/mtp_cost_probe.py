@@ -130,19 +130,23 @@ def main():
             rec = receipt(args.request_log, row["request_id"])
             if rec.get("generation_mode") != sent["generation_mode"] or (depth and rec.get("mtp_depth") != depth):
                 raise RuntimeError("The daemon did not honor the requested generation mode/depth")
-            row.update(label=label, depth=depth, repeat=repeat+1, receipt=rec, fans=fan)
+            row.update(label=label, depth=depth, repeat=repeat+1, receipt=rec, fans=fan,
+                       guard_passed=not bool(rec.get("repetition_stop_triggered")))
             rows.append(row)
             (args.out / f"{label}-result.json").write_text(json.dumps(row, indent=2))
             print(json.dumps({"label": label, "wall_s": row["wall_s"],
                               "decode_tok_s": rec.get("decode_tok_s"),
                               "tokens": rec.get("completion_tokens")}), flush=True)
-    ar = [r["receipt"]["decode_tok_s"] for r in rows if r["depth"] == 0]
+    ar = [r["receipt"]["decode_tok_s"] for r in rows if r["depth"] == 0 and r["guard_passed"]]
     ar_median = statistics.median(ar) if ar else None
     for row in rows:
         row["economics"] = mtp_economics(row["receipt"], ar_median)
     (args.out / "summary.json").write_text(json.dumps({"ar_median_tok_s": ar_median,
-        "caveat": "Sampled outputs vary. Compare repeated matched workloads and full task completion, not a single ratio.",
+        "guard_passed": all(r["guard_passed"] for r in rows),
+        "caveat": "Sampled outputs vary. Guard-stopped samples are invalid; passing this guard does not validate the generated code. Compare repeated matched workloads and full task completion.",
         "runs": rows}, indent=2))
+    if not all(r["guard_passed"] for r in rows):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

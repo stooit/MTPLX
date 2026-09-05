@@ -36,6 +36,9 @@ def load_pi_session(path: Path) -> tuple[dict, list[dict]]:
         if stamp is None:
             stamp = datetime.datetime.fromisoformat(record["timestamp"]).timestamp() * 1000
         usage = message.get("usage") or {}
+        completed = (datetime.datetime.fromisoformat(record["timestamp"]).timestamp() * 1000
+                     if message.get("role") == "assistant" and message.get("stopReason")
+                     and record.get("timestamp") else None)
         content = message.get("content") or []
         if isinstance(content, str):
             content = [{"type": "text", "text": content}]
@@ -61,7 +64,7 @@ def load_pi_session(path: Path) -> tuple[dict, list[dict]]:
             **message, "_id": record["id"], "_parts": parts, "_client": "pi",
             "_parent_entry_id": record.get("parentId"),
             "_time_created_s": float(stamp) / 1000,
-            "time": {"created": stamp},
+            "time": {"created": stamp, "completed": completed},
             "tokens": {"input": usage.get("input", 0), "output": usage.get("output", 0),
                        "cache": {"read": usage.get("cacheRead", 0)}},
             "finish": message.get("stopReason"),

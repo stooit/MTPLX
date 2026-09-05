@@ -21,6 +21,9 @@ def test_economics_distinguishes_aggregate_acceptance_from_conditional_probabili
     # A copy route or mixed depths invalidates the fixed-depth threshold.
     assert mtp_economics({**receipt, "context_copy_accepted_tokens": 12}, 50)["break_even_acceptance"] is None
     assert mtp_economics({**receipt, "drafted_by_depth": [100, 80, 20]}, 50)["break_even_acceptance"] is None
+    failed = mtp_economics({**receipt, "repetition_stop_triggered": True}, 50)
+    assert failed["status"] == "guard_stopped_invalid_quality_sample"
+    assert failed["speedup_vs_ar"] is None
 
 
 def test_intervals_preserve_zero_and_missing_counters_and_expose_gaps():

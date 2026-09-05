@@ -526,7 +526,7 @@ def _turn_row(turn: dict) -> dict:
     canon = receipt.get("committed_reasoning_canonicalization") or {}
     samples = [e for e in turn.get("flight", []) if e.get("ev") == "s"]
     status = "ok"
-    if message.get("error"):
+    if message.get("error") or message.get("stopReason") in {"error", "aborted"}:
         status = "CANCEL/ERR"
     elif not receipt:
         status = "missing receipt" if completed_s else "in progress"

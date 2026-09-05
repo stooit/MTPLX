@@ -50,6 +50,10 @@ def mtp_economics(receipt: dict, ar_tok_s: float | None = None) -> dict:
         "break_even_acceptance": None,
         "status": "matched_ar_measurement_required",
     }
+    if receipt.get("repetition_stop_triggered"):
+        result.update(status="guard_stopped_invalid_quality_sample",
+                      guard_reason=receipt.get("repetition_stop_reason"))
+        return result
     ar = _number(ar_tok_s)
     if ar and tokens and elapsed:
         result["speedup_vs_ar"] = (tokens / elapsed) / ar

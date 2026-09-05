@@ -710,7 +710,8 @@ def cmd_trace_report(args: argparse.Namespace) -> int:
         ("Completion tokens", _fmt_tok(sum(r["completion_tokens"] or 0 for r in rows))),
         ("Client think tokens", _fmt_tok(None if any(r["client_reasoning_tokens"] is None for r in rows)
                                          else sum(r["client_reasoning_tokens"] for r in rows))),
-        ("Wall time (turns)", _fmt_dur(sum(r["wall_s"] or 0 for r in rows))),
+        ("Wall time (turns)", _fmt_dur(None if any(r["wall_s"] is None for r in rows)
+                                      else sum(r["wall_s"] for r in rows))),
         ("Mean decode", f"{mean_dec:.1f} tok/s" if mean_dec else "-"),
     ]
     join_mode = joined["join_mode"]
