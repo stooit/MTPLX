@@ -25,11 +25,10 @@ from functools import lru_cache
 import mlx.core as mx
 
 from ..nax_verify import nax_available
-
-nax_flash_dsplit_bail_counts: dict[str, int] = {}
-
 from .sdpa_gqa_packed import _paged_reduce_kernel
 from .sdpa_nax_flash import _HEADER
+
+nax_flash_dsplit_bail_counts: dict[str, int] = {}
 
 # Template params: InT, D, QL, GQA_F.
 _SOURCE = r"""

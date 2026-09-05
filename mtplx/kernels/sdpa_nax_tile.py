@@ -30,10 +30,9 @@ from functools import lru_cache
 import mlx.core as mx
 
 from ..nax_verify import nax_available
+from .sdpa_gqa_packed import _blocks_for_capacity, _paged_reduce_kernel
 
 nax_tile_bail_counts: dict[str, int] = {}
-
-from .sdpa_gqa_packed import _blocks_for_capacity, _paged_reduce_kernel
 
 _HEADER = r"""
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
