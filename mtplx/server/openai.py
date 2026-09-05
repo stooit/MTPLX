@@ -17454,8 +17454,8 @@ def _prefill_admission_chain_shed_enabled() -> bool:
     ).strip().lower() not in {"0", "off", "false", "no"}
 
 
-# Same line as _allocator_pressure_level's WARNING edge: at >=97% of the
-# Metal limit the next growth step swaps.
+# Same line as _allocator_pressure_level's WARNING edge. This is an early
+# allocation-budget signal, not proof that the operating system is swapping.
 _PREFILL_ADMISSION_PRESSURE_FRACTION = 0.97
 
 
@@ -17498,10 +17498,12 @@ def _prefill_admission_shed(
 
     Projects the miss-prefill footprint against the live allocator state
     and, only when the projection crosses the guard's WARNING line, frees
-    in escalation order: superseded same-session bank entries (the prefix
+    in escalation order: unused allocator cache, superseded same-session
+    bank entries (the prefix
     was rewritten, so they can never be restored by this lineage again),
-    then LRU idle entries with every active session protected, then the
-    allocator cache. Never raises; returns the receipt when it acted.
+    then LRU idle entries with every active session protected, then sibling
+    and terminal snapshots while protecting the incoming restore source.
+    Never raises; returns the receipt when it acted.
     """
 
     if not _prefill_admission_shed_enabled():
@@ -17642,8 +17644,28 @@ def _prefill_admission_shed(
             "threshold_bytes": int(threshold),
             "limit_bytes": int(limit),
         }
-        deficit = projected - threshold
-        if session_bank is not None:
+        # The allocator pool is free storage, whereas session snapshots
+        # avoid real re-prefill/SSD work. Reclaim the pool and remeasure
+        # before choosing any snapshot victims. Counting it as an admission
+        # deficit evicted useful conversations even when active KV fitted.
+        try:
+            import mlx.core as _mx
+
+            _mx.clear_cache()
+            receipt["cache_cleared"] = True
+        except Exception as exc:
+            receipt["cache_cleared"] = False
+            receipt["cache_clear_error"] = repr(exc)
+        after_cache = _mlx_memory_stats_live()
+        if int(after_cache.get("active_memory_bytes") or 0) > 0:
+            projected = (
+                int(after_cache["active_memory_bytes"])
+                + int(after_cache.get("cache_memory_bytes") or 0)
+                + miss_tokens * per_token + transients
+            )
+        receipt["projected_bytes_after_cache_clear"] = int(projected)
+        deficit = max(0, projected - threshold)
+        if session_bank is not None and deficit > 0:
             try:
                 bank_bytes_before = int(session_bank.total_nbytes)
                 receipt["bank_bytes_before"] = bank_bytes_before
@@ -17705,13 +17727,16 @@ def _prefill_admission_shed(
                 receipt["bank_bytes_after"] = int(session_bank.total_nbytes)
             except Exception as exc:
                 receipt["bank_error"] = repr(exc)
-        try:
-            import mlx.core as _mx
+        if deficit > 0:
+            # Evicted leaves may now sit in the allocator pool. Return that
+            # storage before the final physical-memory receipt as well.
+            try:
+                import mlx.core as _mx
 
-            _mx.clear_cache()
-            receipt["cache_cleared"] = True
-        except Exception:
-            receipt["cache_cleared"] = False
+                _mx.clear_cache()
+                receipt["cache_cleared"] = True
+            except Exception as exc:
+                receipt["cache_clear_error"] = repr(exc)
         after = _mlx_memory_stats_live()
         receipt["active_bytes_after"] = int(after.get("active_memory_bytes") or 0)
         receipt["cache_bytes_after"] = int(after.get("cache_memory_bytes") or 0)
@@ -17740,8 +17765,8 @@ def _allocator_pressure_level(state: "ServerState") -> tuple[int, float]:
     macOS's kern.memorystatus level fires only once the system is already
     compressing/swapping — on a 48 GB Mac that is minutes into the death
     spiral (#305: 61.8/48.0 GB before the first signal). The allocator
-    knows earlier: active+cache at >=97% of the configured Metal memory
-    limit means the next growth step swaps, so treat it as WARNING (2);
+    knows its allocation envelope earlier: active+cache at >=97% of the
+    configured Metal memory limit is treated as WARNING (2);
     past the limit is CRITICAL-equivalent (4). Returns (level, fraction).
     """
     caps = getattr(state, "metal_memory_caps", None)

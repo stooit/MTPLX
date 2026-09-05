@@ -9,8 +9,8 @@ mid-prefill and the sustained-pressure guard killed the request with a
 structured 507 ~30 s later.
 
 These tests pin the admission guard that sheds BEFORE the prefill:
-superseded same-session entries first, then LRU idle entries with active
-sessions protected, then the allocator cache — and stays perfectly inert
+unused allocator storage first, then superseded same-session entries and
+LRU idle entries with active sessions protected — and stays perfectly inert
 when memory is healthy.
 """
 
@@ -151,6 +151,20 @@ class TestInertWhenHealthy:
 
 class TestIncidentShape:
     """The #415 timeline: cache-miss prefill + superseded resident snapshot."""
+
+    def test_allocator_cache_reclaims_without_evicting_useful_sessions(self, monkeypatch):
+        import mlx.core as mx
+
+        live = {"ok": True, "active_memory_bytes": 85 * GIB,
+                "cache_memory_bytes": 8 * GIB}
+        monkeypatch.setattr(srv, "_mlx_memory_stats_live", lambda: dict(live))
+        monkeypatch.setattr(mx, "clear_cache", lambda: live.update(cache_memory_bytes=0))
+        bank = _Bank([_Entry(range(900, 1000), "pi", 6 * GIB)])
+        receipt = _shed(_state(), list(range(40_000)), bank, "pi")
+        assert receipt["cache_cleared"] is True
+        assert bank.cleared_sessions == []
+        assert bank.shrink_calls == []
+        assert bank.total_nbytes == 6 * GIB
 
     def test_superseded_session_snapshot_released_first(self, monkeypatch):
         _pin_live_stats(monkeypatch, active=93 * GIB, cache=2 * GIB)
