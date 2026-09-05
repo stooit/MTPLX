@@ -61,6 +61,22 @@ venv's Python, ABI and macOS tags to choose between them; the app's installed
 fingerprint follows that selected artifact. macOS14 retains the pure wheel.
 This packaging does not establish performance on an unmeasured GPU family.
 
+The app installer can be exercised without opening its UI. Set
+`MTPLX_QA_WHEEL` to the staged pure wheel (with `Native/` and the selector
+beside it), `MTPLX_QA_PYTHON` to the bundled Python, and `MTPLX_QA_HOME` to
+a new, isolated test directory. Then run:
+
+```sh
+swift test --package-path apps/MTPLXApp \
+  --filter RuntimeBundledArtifactTests.testFreshArtifactInstallAndReuse
+```
+
+`MTPLX_QA_EXPECT_WHEEL` optionally asserts the selected wheel's filename.
+The test installs through the production bootstrapper, verifies its health
+and fingerprint, checks reuse, and preserves an `artifact-install-receipt.json`
+in the test directory. It skips when the three required inputs are absent.
+Run native pipeline/model checks under the project's verified fan procedure.
+
 ## Things that break it
 
 * **nanobind drift.** `nanobind>=2` at the MTPLX root is a floor, not a pin.

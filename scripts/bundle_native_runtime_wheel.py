@@ -7,6 +7,7 @@ This builds a local artifact only; it never uploads or installs anything.
 
 import argparse
 from email.parser import BytesParser
+from email.policy import compat32
 import hashlib
 import json
 from pathlib import Path
@@ -70,7 +71,10 @@ def main():
                         for requirement in native_requirements:
                             if requirement not in metadata.get_all("Requires-Dist", []):
                                 metadata["Requires-Dist"] = requirement
-                        data = metadata.as_bytes()
+                        # Core Metadata requirements must stay on one line;
+                        # email's default folding inserts a newline inside
+                        # environment markers that wheel validators reject.
+                        data = metadata.as_bytes(policy=compat32.clone(max_line_length=0))
                     bundled.writestr(archive.getinfo(name), data)
             bundled.writestr("mtplx/native_build_receipt.json", json.dumps(provenance, indent=2))
             # WheelFile writes a new RECORD for the complete distribution.
