@@ -2346,17 +2346,18 @@ def _apply_metal_memory_caps(
     total_ram_bytes: int | None = None,
     minimum_resident_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Pin MLX Metal allocator caps at startup to avoid wired-memory swap-out
-    pathologies under sustained long-context inference.
+    """Set MLX allocation and wired-residency budgets at startup.
 
     On Apple Silicon, MLX's Metal allocator can grow the wired pool past safe
     headroom under back-to-back >30 K-token requests. When the OS starts
     swapping, decode collapses ~10x (50 t/s -> 2.5 t/s) and the kernel may kill
-    the process. Setting both caps at startup keeps the allocator inside a
-    fixed budget; ``clear_cache`` periodically drops idle pool memory.
+    the process. The allocation limit is MLX's working-set guideline, not an
+    instantaneous hard ceiling: a single operation can exceed it. Admission
+    and request pressure guards remain necessary. ``clear_cache`` releases
+    unused allocator buffers; it does not clear the session bank.
 
     Operators can override via env:
-      MTPLX_MEMORY_LIMIT_BYTES   - hard cap, default 75% of total RAM,
+      MTPLX_MEMORY_LIMIT_BYTES   - allocation budget, default 75% of total RAM,
                                    capped at 192 GiB on very large Macs
       MTPLX_WIRED_LIMIT_BYTES    - wired (resident) cap, default 60% of total
                                    RAM, capped at 160 GiB on very large Macs
