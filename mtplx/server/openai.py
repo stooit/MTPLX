@@ -16519,6 +16519,9 @@ def _health_degradation_payload(state: Any) -> dict[str, Any]:
         for module_name, attr_name in (
             ("mtplx.kernels.sdpa_gqa_packed", "gqa_packed_bail_counts"),
             ("mtplx.attention_split", "gqa_packed_route_bail_counts"),
+            ("mtplx.kernels.sdpa_nax_flash", "nax_flash_bail_counts"),
+            ("mtplx.kernels.sdpa_nax_flash_dsplit", "nax_flash_dsplit_bail_counts"),
+            ("mtplx.kernels.sdpa_nax_tile", "nax_tile_bail_counts"),
         ):
             try:
                 from importlib import import_module
