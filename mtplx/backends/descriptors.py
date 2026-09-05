@@ -1250,6 +1250,14 @@ def tune_policy_for_model(
         return GEMMA4_ASSISTANT_DESCRIPTOR.tune_policy
     if family == "step":
         return STEP3P5_MTP_DESCRIPTOR.tune_policy
+    if family == "qwen4_exp":
+        # Qwen 3.8 Flash-Next: backend qwen4_exp, can_run_verified=True, packs
+        # record mtp_depth_max 3. The allowlist stopped at qwen3_8, so tune
+        # called the model unsupported.
+        return TunePolicy(
+            supported=True,
+            candidates=("AR", "D1", "D2", "D3"),
+        )
     return TunePolicy(
         supported=False,
         unsupported_reason="Tune is supported for Qwen 3.5, Qwen 3.6, Qwen 3.8, and Gemma 4 MTPLX models only.",

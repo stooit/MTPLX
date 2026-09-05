@@ -4,6 +4,20 @@ from mtplx.adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
 from mtplx.benchmarks.runners import mtp_adaptive
 
 
+def test_expected_value_does_not_charge_early_rejection_again_at_later_positions():
+    policy = ExpectedValueDepthPolicy(
+        max_depth=3, accept_priors=(1.0, 1.0, 1.0), ewma_alpha=0.5,
+        confidence_weight=0.0, warmup_full_depth_cycles=0, exploration_interval=0,
+    )
+    policy.observe(attempted_depth=3, accepted_depths=3)
+    policy.observe(attempted_depth=3, accepted_depths=0)
+    decision = policy.should_continue_after_draft(
+        drafted_depth=2, max_depth=3, draft_metrics={})
+    # Half the first-position estimate, with perfect later acceptance when
+    # reached, means p(accept third) = .5, not .5 * .5 * .5 = .125.
+    assert decision["expected_extra_accept"] == 0.5
+
+
 def test_adaptive_policy_increases_after_full_accept_streak():
     policy = AdaptiveDepthPolicy(max_depth=4, start_depth=2, increase_after=2)
 

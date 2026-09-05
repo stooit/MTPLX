@@ -25,6 +25,7 @@ ICNS_SOURCE="$ROOT/Resources/AppIcon.icns"
 THERMALFORGE_SOURCE="${MTPLX_THERMALFORGE_BINARY:-$HOME/.mtplx/bin/thermalforge}"
 REQUIRE_THERMALFORGE_RESOURCE="${MTPLX_REQUIRE_THERMALFORGE_RESOURCE:-0}"
 RUNTIME_WHEEL_SOURCE="${MTPLX_RUNTIME_WHEEL:-}"
+NATIVE_RUNTIME_WHEEL_SOURCE="${MTPLX_NATIVE_RUNTIME_WHEEL:-}"
 REQUIRE_RUNTIME_WHEEL_RESOURCE="${MTPLX_REQUIRE_RUNTIME_WHEEL_RESOURCE:-0}"
 BUNDLED_PYTHON_DIR="${MTPLX_BUNDLED_PYTHON_DIR:-}"
 REQUIRE_BUNDLED_PYTHON_RESOURCE="${MTPLX_REQUIRE_BUNDLED_PYTHON_RESOURCE:-0}"
@@ -327,6 +328,17 @@ elif [[ "$REQUIRE_RUNTIME_WHEEL_RESOURCE" == "1" ]]; then
   echo "error: runtime wheel resource missing at $RUNTIME_WHEEL_SOURCE" >&2
   echo "set MTPLX_RUNTIME_WHEEL to the mtplx release wheel before building the release app" >&2
   exit 1
+fi
+if [[ -n "$NATIVE_RUNTIME_WHEEL_SOURCE" ]]; then
+  if [[ ! -f "$NATIVE_RUNTIME_WHEEL_SOURCE" || ! -f "$RUNTIME_WHEEL_SOURCE" ]]; then
+    echo "error: native runtime requires both native and pure fallback wheels" >&2
+    exit 1
+  fi
+  mkdir -p "$BUNDLE_DIR/Contents/Resources/Runtime/Native"
+  /usr/bin/ditto --norsrc "$NATIVE_RUNTIME_WHEEL_SOURCE" \
+    "$BUNDLE_DIR/Contents/Resources/Runtime/Native/$(basename "$NATIVE_RUNTIME_WHEEL_SOURCE")"
+  /usr/bin/ditto --norsrc "$REPO_ROOT/scripts/select_runtime_wheel.py" \
+    "$BUNDLE_DIR/Contents/Resources/Runtime/select_runtime_wheel.py"
 fi
 # Bundled Python interpreter (python-build-standalone install_only_stripped
 # tree). With it in Contents/Resources/PythonRuntime, the app can build its

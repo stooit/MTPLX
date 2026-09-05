@@ -1475,8 +1475,18 @@ def _qsa_prefill_enabled() -> bool:
         # cannot compile the MPP pipelines (macOS 27, issue #404): honoring
         # the env verbatim there turns into a guaranteed mid-request 500.
         # The probe prints its own diagnostic when it says no.
-        return _qsa_prefill_mpp_compile_ok()
-    return qsa_prefill_lane_auto_supported() and _qsa_prefill_mpp_compile_ok()
+        return _qsa_prefill_producer_compile_ok()
+    return qsa_prefill_lane_auto_supported() and _qsa_prefill_producer_compile_ok()
+
+
+def _qsa_prefill_producer_compile_ok() -> bool:
+    from mtplx.kernels.qsa_indexer_select import qsa_indexer_select_nax_available
+
+    # The portable producer uses bounded MLX score tiles when NAX is absent
+    # (qsa_indexer_prefill_metal). It never dispatches the MPP score kernel.
+    # Requiring that unrelated kernel to compile disables the Steel consumer
+    # on M1-M4 even after a valid native extension has been installed.
+    return not qsa_indexer_select_nax_available() or _qsa_prefill_mpp_compile_ok()
 
 
 def _qsa_prefill_mpp_compile_ok() -> bool:
@@ -1585,14 +1595,17 @@ def _qsa_large_prefill_enabled(rows: int, total_tokens: int) -> bool:
     # existing exact cache path and reserves this matrix-shaped lane for the
     # prompt/SSD-restored prefill it was designed to accelerate.
     return (
-        _qsa_prefill_enabled()
-        and current_attention_phase() == "prefill"
+        current_attention_phase() == "prefill"
         and int(rows) >= _qsa_prefill_min_rows()
         # Gate on the earliest query in the chunk, not its final T.  A large
         # restored/SSD chunk may straddle the crossover; routing it by final T
         # would make its early rows pay the exact fixed-cost pathology this
         # guard exists to avoid.
         and int(total_tokens) - int(rows) >= _qsa_prefill_min_context()
+        # Capability/pipeline resolution is only useful for eligible prefill
+        # chunks. Never pay its imports and native readiness checks on every
+        # AR or speculative decode layer, especially on portable consumers.
+        and _qsa_prefill_enabled()
     )
 
 

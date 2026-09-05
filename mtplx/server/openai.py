@@ -2346,17 +2346,18 @@ def _apply_metal_memory_caps(
     total_ram_bytes: int | None = None,
     minimum_resident_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Pin MLX Metal allocator caps at startup to avoid wired-memory swap-out
-    pathologies under sustained long-context inference.
+    """Set MLX allocation and wired-residency budgets at startup.
 
     On Apple Silicon, MLX's Metal allocator can grow the wired pool past safe
     headroom under back-to-back >30 K-token requests. When the OS starts
     swapping, decode collapses ~10x (50 t/s -> 2.5 t/s) and the kernel may kill
-    the process. Setting both caps at startup keeps the allocator inside a
-    fixed budget; ``clear_cache`` periodically drops idle pool memory.
+    the process. The allocation limit is MLX's working-set guideline, not an
+    instantaneous hard ceiling: a single operation can exceed it. Admission
+    and request pressure guards remain necessary. ``clear_cache`` releases
+    unused allocator buffers; it does not clear the session bank.
 
     Operators can override via env:
-      MTPLX_MEMORY_LIMIT_BYTES   - hard cap, default 75% of total RAM,
+      MTPLX_MEMORY_LIMIT_BYTES   - allocation budget, default 75% of total RAM,
                                    capped at 192 GiB on very large Macs
       MTPLX_WIRED_LIMIT_BYTES    - wired (resident) cap, default 60% of total
                                    RAM, capped at 160 GiB on very large Macs
@@ -15591,6 +15592,10 @@ def _metrics_envelope(
         "mtp_history_policy": str(stats.get("mtp_history_policy") or ""),
         "mtp_history_window_tokens": int(stats.get("mtp_history_window_tokens") or 0),
         "mtp_history_position_base": int(stats.get("mtp_history_position_base") or 0),
+        **({"fixed_m4_admission": stats["fixed_m4_admission"]}
+           if stats.get("fixed_m4_admission") else {}),
+        **({"compiled_verify": stats["graphbank"]["compiled_verify"]}
+           if (stats.get("graphbank") or {}).get("compiled_verify") else {}),
         **_maintenance_timing_stats(stats),
         "session_cache_hit": bool(session_cache_hit),
         "cache_miss_reason": cache_miss_reason,
@@ -16515,6 +16520,9 @@ def _health_degradation_payload(state: Any) -> dict[str, Any]:
         for module_name, attr_name in (
             ("mtplx.kernels.sdpa_gqa_packed", "gqa_packed_bail_counts"),
             ("mtplx.attention_split", "gqa_packed_route_bail_counts"),
+            ("mtplx.kernels.sdpa_nax_flash", "nax_flash_bail_counts"),
+            ("mtplx.kernels.sdpa_nax_flash_dsplit", "nax_flash_dsplit_bail_counts"),
+            ("mtplx.kernels.sdpa_nax_tile", "nax_tile_bail_counts"),
         ):
             try:
                 from importlib import import_module
@@ -17435,8 +17443,20 @@ def _prefill_admission_min_miss_tokens() -> int:
         return 4096
 
 
-# Same line as _allocator_pressure_level's WARNING edge: at >=97% of the
-# Metal limit the next growth step swaps.
+def _prefill_admission_live_prefix_enabled() -> bool:
+    return os.environ.get(
+        "MTPLX_PREFILL_ADMISSION_LIVE_PREFIX", "1"
+    ).strip().lower() not in {"0", "off", "false", "no"}
+
+
+def _prefill_admission_chain_shed_enabled() -> bool:
+    return os.environ.get(
+        "MTPLX_PREFILL_ADMISSION_CHAIN_SHED", "1"
+    ).strip().lower() not in {"0", "off", "false", "no"}
+
+
+# Same line as _allocator_pressure_level's WARNING edge. This is an early
+# allocation-budget signal, not proof that the operating system is swapping.
 _PREFILL_ADMISSION_PRESSURE_FRACTION = 0.97
 
 
@@ -17479,10 +17499,12 @@ def _prefill_admission_shed(
 
     Projects the miss-prefill footprint against the live allocator state
     and, only when the projection crosses the guard's WARNING line, frees
-    in escalation order: superseded same-session bank entries (the prefix
+    in escalation order: unused allocator cache, superseded same-session
+    bank entries (the prefix
     was rewritten, so they can never be restored by this lineage again),
-    then LRU idle entries with every active session protected, then the
-    allocator cache. Never raises; returns the receipt when it acted.
+    then LRU idle entries with every active session protected, then sibling
+    and terminal snapshots while protecting the incoming restore source.
+    Never raises; returns the receipt when it acted.
     """
 
     if not _prefill_admission_shed_enabled():
@@ -17555,6 +17577,56 @@ def _prefill_admission_shed(
                 if block_tokens > reused_tokens:
                     reused_tokens = block_tokens
                     reused_mode = "block_prefix"
+        # The bank is not the only holder of reusable state: the engine's
+        # live sessions serve a committed prefix directly (that is what a
+        # warm turn's cached_tokens reads), and a live frontier can be
+        # unbanked — a refused snapshot (retokenized-history mismatch)
+        # banks nothing while the live KV still serves. Estimating from
+        # the bank alone read a warm 212k-token session as a full miss,
+        # cleared its snapshots as "superseded", and every client retry
+        # was then a 211,807-token cold miss that could never be admitted
+        # until a server restart (#447).
+        if _prefill_admission_live_prefix_enabled():
+            sessions = getattr(state, "sessions", None)
+            live_tokens = 0
+            if sessions is not None:
+                # Ask the same ladder session resolution asks (exact, then
+                # pending-postcommit near prefix, then best common prefix),
+                # with the non-exact answers rewound to the block floor the
+                # bank estimate above uses — the reuse a request achieves
+                # is never more optimistic than resolution's own match.
+                try:
+                    exact_fn = getattr(sessions, "longest_prefix_session", None)
+                    live = exact_fn(prompt_ids) if callable(exact_fn) else None
+                    if live is not None:
+                        live_tokens = len(
+                            getattr(live, "committed_token_ids", ()) or ()
+                        )
+                    if live_tokens <= 0:
+                        near_fn = getattr(
+                            sessions, "pending_near_prefix_session", None
+                        )
+                        if callable(near_fn):
+                            near, matched = near_fn(prompt_ids)
+                            if near is not None:
+                                live_tokens = _block_restorable_prefix_tokens(
+                                    int(matched)
+                                )
+                    if live_tokens <= 0:
+                        common_fn = getattr(
+                            sessions, "best_common_prefix_session", None
+                        )
+                        if callable(common_fn):
+                            shared, matched = common_fn(prompt_ids)
+                            if shared is not None:
+                                live_tokens = _block_restorable_prefix_tokens(
+                                    int(matched)
+                                )
+                except Exception:
+                    live_tokens = 0
+            if live_tokens > reused_tokens:
+                reused_tokens = int(live_tokens)
+                reused_mode = "live_session"
         miss_tokens = max(0, prompt_tokens - reused_tokens)
         if miss_tokens < _prefill_admission_min_miss_tokens():
             return None
@@ -17573,8 +17645,28 @@ def _prefill_admission_shed(
             "threshold_bytes": int(threshold),
             "limit_bytes": int(limit),
         }
-        deficit = projected - threshold
-        if session_bank is not None:
+        # The allocator pool is free storage, whereas session snapshots
+        # avoid real re-prefill/SSD work. Reclaim the pool and remeasure
+        # before choosing any snapshot victims. Counting it as an admission
+        # deficit evicted useful conversations even when active KV fitted.
+        try:
+            import mlx.core as _mx
+
+            _mx.clear_cache()
+            receipt["cache_cleared"] = True
+        except Exception as exc:
+            receipt["cache_cleared"] = False
+            receipt["cache_clear_error"] = repr(exc)
+        after_cache = _mlx_memory_stats_live()
+        if int(after_cache.get("active_memory_bytes") or 0) > 0:
+            projected = (
+                int(after_cache["active_memory_bytes"])
+                + int(after_cache.get("cache_memory_bytes") or 0)
+                + miss_tokens * per_token + transients
+            )
+        receipt["projected_bytes_after_cache_clear"] = int(projected)
+        deficit = max(0, projected - threshold)
+        if session_bank is not None and deficit > 0:
             try:
                 bank_bytes_before = int(session_bank.total_nbytes)
                 receipt["bank_bytes_before"] = bank_bytes_before
@@ -17601,16 +17693,51 @@ def _prefill_admission_shed(
                             protect_active=True,
                         )
                     )
+                # Escalation between the protected LRU pass and giving up
+                # (#447): a deep session's sibling snapshots — forked
+                # generations of the same conversation that no put()-time
+                # supersede collapses — are active-protected above, so a
+                # 12.6 GiB bank served a 7 GiB deficit with zero evictions
+                # and the request died on the sustained-pressure 507. Walk
+                # those chain prefixes (never a session's terminal entry,
+                # never the entry this prompt restores from; the SSD cold
+                # tier keeps every eviction restorable) before letting the
+                # prefill start into a projection that crosses the line.
+                if _prefill_admission_chain_shed_enabled():
+                    bank_bytes_now = int(session_bank.total_nbytes)
+                    remaining = deficit - max(
+                        0, bank_bytes_before - bank_bytes_now
+                    )
+                    chain_fn = getattr(
+                        session_bank, "shrink_for_admission", None
+                    )
+                    if (
+                        remaining > 0
+                        and bank_bytes_now > 0
+                        and callable(chain_fn)
+                    ):
+                        chain_evicted, terminal_evicted = chain_fn(
+                            max(0, bank_bytes_now - remaining),
+                            protect_tokens=prompt_ids,
+                            reason="prefill_admission_chain",
+                        )
+                        receipt["chain_entries_evicted"] = int(chain_evicted)
+                        receipt["terminal_entries_evicted"] = int(
+                            terminal_evicted
+                        )
                 receipt["bank_bytes_after"] = int(session_bank.total_nbytes)
             except Exception as exc:
                 receipt["bank_error"] = repr(exc)
-        try:
-            import mlx.core as _mx
+        if deficit > 0:
+            # Evicted leaves may now sit in the allocator pool. Return that
+            # storage before the final physical-memory receipt as well.
+            try:
+                import mlx.core as _mx
 
-            _mx.clear_cache()
-            receipt["cache_cleared"] = True
-        except Exception:
-            receipt["cache_cleared"] = False
+                _mx.clear_cache()
+                receipt["cache_cleared"] = True
+            except Exception as exc:
+                receipt["cache_clear_error"] = repr(exc)
         after = _mlx_memory_stats_live()
         receipt["active_bytes_after"] = int(after.get("active_memory_bytes") or 0)
         receipt["cache_bytes_after"] = int(after.get("cache_memory_bytes") or 0)
@@ -17639,8 +17766,8 @@ def _allocator_pressure_level(state: "ServerState") -> tuple[int, float]:
     macOS's kern.memorystatus level fires only once the system is already
     compressing/swapping — on a 48 GB Mac that is minutes into the death
     spiral (#305: 61.8/48.0 GB before the first signal). The allocator
-    knows earlier: active+cache at >=97% of the configured Metal memory
-    limit means the next growth step swaps, so treat it as WARNING (2);
+    knows its allocation envelope earlier: active+cache at >=97% of the
+    configured Metal memory limit is treated as WARNING (2);
     past the limit is CRITICAL-equivalent (4). Returns (level, fraction).
     """
     caps = getattr(state, "metal_memory_caps", None)
@@ -19626,7 +19753,13 @@ def _request_observability(
             "x-mtplx-request-id",
         }
     }
+    client_links = {}
+    for name in ("turn", "entry"):
+        value = str(headers.get(f"x-mtplx-client-{name}-id") or "")
+        if _CLIENT_REQUEST_ID_RE.fullmatch(value):
+            client_links[f"request_client_{name}_id"] = value
     return {
+        **client_links,
         "request_message_count": len(request.messages),
         "request_message_roles": [message.role for message in request.messages],
         "request_message_chars": [
@@ -30115,6 +30248,7 @@ def create_app(state: ServerState) -> FastAPI:
         )
         resolved_session_id: str | None = None
         resolved_session_source: str | None = None
+        resolved_session_diagnostic: dict[str, Any] = {}
         early_postcommit_handled = False
         early_postcommit_wait: dict[str, Any] | None = None
         early_cross_session_yield: dict[str, Any] | None = None
@@ -30141,6 +30275,7 @@ def create_app(state: ServerState) -> FastAPI:
                         chat_id=_request_extra(request, "chat_id"),
                         conversation_id=_request_extra(request, "conversation_id"),
                         prompt_ids=prompt_ids,
+                        diagnostic_out=resolved_session_diagnostic,
                     )
                 )
             except Exception:
@@ -30456,6 +30591,7 @@ def create_app(state: ServerState) -> FastAPI:
                     chat_id=_request_extra(request, "chat_id"),
                     conversation_id=_request_extra(request, "conversation_id"),
                     prompt_ids=prompt_ids,
+                    diagnostic_out=resolved_session_diagnostic,
                 )
             session = state.sessions.get_or_create(session_id)
             session.last_cache_miss_reason = cache_miss_reason
@@ -30489,10 +30625,9 @@ def create_app(state: ServerState) -> FastAPI:
             _record_tool_parse_event(state, event="tool_template_fallback")
         if request_observability.get("request_client_hint") == "android_studio":
             _record_tool_parse_event(state, event="android_studio_request_detected")
-        prefix_diagnostic = getattr(state.sessions, "last_prefix_diagnostic", None)
-        if isinstance(prefix_diagnostic, dict):
+        if resolved_session_diagnostic:
             request_observability["request_session_prefix_diagnostic"] = (
-                prefix_diagnostic
+                resolved_session_diagnostic
             )
         session_keep_live_ref = _session_keep_live_refs_for_request(
             session_source=session_source,

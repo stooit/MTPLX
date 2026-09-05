@@ -2913,7 +2913,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Comma-separated MTP depths or Gemma draft blocks to compare against AR",
     )
-    tune_p.add_argument("--max-tokens", type=int, default=512)
+    tune_p.add_argument("--max-tokens", type=int, default=512,
+                        help="Per-case upper bound; the prompt suite's token budget also applies")
     tune_p.add_argument("--limit", type=int, default=1)
     tune_p.add_argument("--seed", type=int, default=0)
     tune_p.add_argument("--run-id")
@@ -3068,6 +3069,11 @@ def build_parser() -> argparse.ArgumentParser:
             help="opencode.db path",
         )
         p.add_argument("--json", action="store_true", help="machine-readable output")
+
+        p.add_argument("--request-log", help="explicit request JSONL, including its rotation files")
+        p.add_argument("--flight-log", help="explicit flight JSONL, including its rotation files")
+        p.add_argument("--pi-session", help="Pi session JSONL instead of the OpenCode database")
+        p.add_argument("--ar-tok-s", type=float, help="measured AR decode TPS for the same hardware, model and workload; never a default estimate")
 
     trace_sessions_p = trace_sub.add_parser(
         "sessions", help="List recent OpenCode sessions with server-request matches"

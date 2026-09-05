@@ -10230,6 +10230,30 @@ final class MTPLXAppCoreTests: XCTestCase {
         )
     }
 
+    func testNativeWheelSelectionOwnsTheManagedRuntimeFingerprint() throws {
+        let fixture = try makeRuntimeFixture(wheelContents: "pure-wheel")
+        let nativeDir = fixture.home.appendingPathComponent("Native")
+        try FileManager.default.createDirectory(at: nativeDir, withIntermediateDirectories: true)
+        let native = nativeDir.appendingPathComponent("mtplx-1.0.0-cp314-cp314-macosx_15_0_arm64.whl")
+        try Data("native-wheel".utf8).write(to: native)
+        let python = fixture.runtimeDir.appendingPathComponent("bin/python")
+        try Data("#!/bin/sh\nprintf '%s\\n' '\(native.path)'\n".utf8).write(to: python)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
+        let bootstrapper = MTPLXRuntimeBootstrapper(environment: fixture.environment)
+        MTPLXRuntimeBootstrapper.recordWheelFingerprint(for: fixture.wheel, runtimeDir: fixture.runtimeDir)
+        XCTAssertFalse(bootstrapper.installedRuntimeMatchesBundledWheel(
+            installedExecutable: fixture.managedExecutable
+        ), "An OS upgrade that enables the native artifact must refresh a pure installation")
+        MTPLXRuntimeBootstrapper.recordWheelFingerprint(for: native, runtimeDir: fixture.runtimeDir)
+        XCTAssertTrue(bootstrapper.installedRuntimeMatchesBundledWheel(
+            installedExecutable: fixture.managedExecutable
+        ))
+        try Data("#!/bin/sh\nexit 1\n".utf8).write(to: python)
+        XCTAssertFalse(bootstrapper.installedRuntimeMatchesBundledWheel(
+            installedExecutable: fixture.managedExecutable
+        ), "A failed selector must not silently bless an unknown installed artifact")
+    }
+
     func testSameVersionWheelRebuildForcesVenvRefresh() throws {
         let fixture = try makeRuntimeFixture(wheelContents: "wheel-A")
         MTPLXRuntimeBootstrapper.recordWheelFingerprint(

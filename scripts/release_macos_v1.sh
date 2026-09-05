@@ -205,6 +205,26 @@ if [[ ! -x "$PBS_EXTRACT_DIR/bin/python3" ]]; then
   exit 1
 fi
 
+# Build the optional sparse-prefill consumer for the exact bundled Python.
+# Keep the pure wheel beside it: pip/app tag selection declines this binary
+# on older macOS or a different Python ABI rather than breaking installation.
+NATIVE_BUILD_VENV="$OUT_ROOT/native-build-venv"
+NATIVE_DIST="$OUT_ROOT/native-wheels"
+"$PBS_EXTRACT_DIR/bin/python3" -m venv "$NATIVE_BUILD_VENV"
+"$NATIVE_BUILD_VENV/bin/python" -m pip install \
+  build wheel setuptools 'cmake>=3.27' 'mlx==0.32.2' 'nanobind==2.15.0'
+MACOSX_DEPLOYMENT_TARGET=15.0 "$NATIVE_BUILD_VENV/bin/python" -m build \
+  --wheel --no-isolation "$ROOT/native_extensions/qsa_kernels" --outdir "$NATIVE_DIST"
+NATIVE_WHEELS=("$NATIVE_DIST"/mtplx_qsa_kernels-*.whl)
+if [[ "${#NATIVE_WHEELS[@]}" != "1" || ! -f "${NATIVE_WHEELS[0]}" ]]; then
+  echo "error: expected exactly one native QSA wheel" >&2
+  exit 1
+fi
+NATIVE_RUNTIME_WHEEL="$("$NATIVE_BUILD_VENV/bin/python" \
+  "$ROOT/scripts/bundle_native_runtime_wheel.py" "$PYTHON_WHEEL" \
+  "${NATIVE_WHEELS[0]}" --out "$PYTHON_DIST")"
+"$PYTOOLS_VENV/bin/python" -m twine check "$NATIVE_RUNTIME_WHEEL"
+
 echo "Building signed MTPLX.app"
 MTPLX_APP_PUBLIC_RELEASE=1 \
 MTPLX_APP_VERSION="$VERSION" \
@@ -212,6 +232,7 @@ MTPLX_APP_BUILD="$APP_BUILD" \
 MTPLX_APP_BUNDLE_DIR="$APP_BUNDLE" \
 MTPLX_APP_EMBED_LOCAL_RUNTIME_WRAPPER=0 \
 MTPLX_RUNTIME_WHEEL="$PYTHON_WHEEL" \
+MTPLX_NATIVE_RUNTIME_WHEEL="$NATIVE_RUNTIME_WHEEL" \
 MTPLX_REQUIRE_RUNTIME_WHEEL_RESOURCE=1 \
 MTPLX_BUNDLED_PYTHON_DIR="$PBS_EXTRACT_DIR" \
 MTPLX_REQUIRE_BUNDLED_PYTHON_RESOURCE=1 \

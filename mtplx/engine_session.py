@@ -1673,7 +1673,19 @@ class EngineSessionManager:
         chat_id: str | None = None,
         conversation_id: str | None = None,
         prompt_ids: list[int] | tuple[int, ...] | None = None,
+        diagnostic_out: dict[str, Any] | None = None,
     ) -> tuple[str, str]:
+        # The caller owns its evidence even while another request resolves
+        # during a postcommit wait. The last value is only for health.
+        self.last_prefix_diagnostic = None
+        if diagnostic_out is not None:
+            diagnostic_out.clear()
+
+        def record(diagnostic: dict[str, Any]) -> None:
+            self.last_prefix_diagnostic = diagnostic
+            if diagnostic_out is not None:
+                diagnostic_out.update(diagnostic)
+
         headers = headers or {}
         metadata = metadata or {}
         lowered_headers = {
@@ -1708,11 +1720,11 @@ class EngineSessionManager:
         if prompt_ids:
             best = self.longest_prefix_session(prompt_ids)
             if best is not None:
-                self.last_prefix_diagnostic = self._prefix_diagnostic(
+                record(self._prefix_diagnostic(
                     prompt_ids,
                     selected=best,
                     exact=True,
-                )
+                ))
                 return best.session_id, "longest_prefix"
             pending, matched = self.pending_near_prefix_session(prompt_ids)
             if pending is not None:
@@ -1731,7 +1743,7 @@ class EngineSessionManager:
                         - int(matched),
                     }
                 )
-                self.last_prefix_diagnostic = diagnostic
+                record(diagnostic)
                 return pending.session_id, "pending_postcommit_near_prefix"
             best, matched = self.best_common_prefix_session(prompt_ids)
             if best is not None:
@@ -1748,9 +1760,9 @@ class EngineSessionManager:
                         "reason": "common_prefix_reuse",
                     }
                 )
-                self.last_prefix_diagnostic = diagnostic
+                record(diagnostic)
                 return best.session_id, "common_prefix_reuse"
-            self.last_prefix_diagnostic = self._prefix_diagnostic(prompt_ids)
+            record(self._prefix_diagnostic(prompt_ids))
         else:
             self.last_prefix_diagnostic = None
         return _new_anon_session_id(), "new"
